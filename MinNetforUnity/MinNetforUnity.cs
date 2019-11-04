@@ -17,11 +17,11 @@ namespace MinNetforUnity
     //{
     //    public void test()
     //    {
-
+    //
     //    }
     //}
 
-    public enum MinNetRpcTarget { All, Others, AllViaServer };
+    public enum MinNetRpcTarget { All = -1000, Others, AllViaServer, Server };
 
     public class MonoBehaviourMinNetCallBack : MonoBehaviour
     {
@@ -118,12 +118,12 @@ namespace MinNetforUnity
         private static void ObjectInstantiate(MinNetPacket packet)
         {
             MinNetUser.ObjectInstantiate
-                (
-                    packet.pop_string(),
-                    packet.pop_vector3(),
-                    packet.pop_vector3(),
-                    packet.pop_int()
-                );
+            (
+                packet.pop_string(),
+                packet.pop_vector3(),
+                packet.pop_vector3(),
+                packet.pop_int()
+            );
         }
 
         private void PacketHandler(MinNetPacket packet)
@@ -190,6 +190,7 @@ namespace MinNetforUnity
 
         private static Socket socket = null;
         private static int ping = 20;
+        public static int ServerTime;// 서버가 시작된 후로 부터 흐른 시간 ms단위
 
         public static int Ping
         {
@@ -307,8 +308,12 @@ namespace MinNetforUnity
             Type componentType = System.Reflection.Assembly.Load("Assembly-CSharp").GetType(componentName);
             if (componentType == null)
             {
-                Debug.Log("RPC를 사용할 컴포넌트를 찾을 수 없습니다.");
-                return;
+                componentType = Type.GetType(componentName);
+                if(componentType == null)
+                {
+                    Debug.Log("RPC를 사용할 컴포넌트를 찾을 수 없습니다.");
+                    return;
+                }
             }
             MethodBase methodBase = componentType.GetMethod(methodName);
             if (methodBase == null)
@@ -474,11 +479,13 @@ namespace MinNetforUnity
 
                 case Defines.MinNetPacketType.PING_CAST:
                     Ping = packet.pop_int();
+                    ServerTime = packet.pop_int() - (int)(Ping * 0.5f);
                     break;
 
                 case Defines.MinNetPacketType.ID_CAST:
                     IdCast(packet);
                     break;
+
                 default:
                     lock(packetQ)
                     {
