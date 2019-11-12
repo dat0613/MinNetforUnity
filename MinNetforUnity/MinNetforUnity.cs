@@ -25,7 +25,7 @@ namespace MinNetforUnity
 
     public class MonoBehaviourMinNetCallBack : MonoBehaviour
     {
-        public virtual void UserEnterRoom()
+        public virtual void UserEnterRoom(int roomNumber, string roomName)
         {
 
         }
@@ -102,12 +102,12 @@ namespace MinNetforUnity
 
     public class MinNetPacketHandler : MonoBehaviour
     {
-        private void UserEnterRoom()
+        private void UserEnterRoom(MinNetPacket packet)
         {
             var callbacks = GameObject.FindObjectsOfType<MonoBehaviourMinNetCallBack>();
             foreach (var callback in callbacks)
             {
-                callback.UserEnterRoom();
+                callback.UserEnterRoom(packet.pop_int(), packet.pop_string());
             }
         }
 
@@ -136,7 +136,7 @@ namespace MinNetforUnity
             switch ((Defines.MinNetPacketType)packet.packet_type)
             {
                 case Defines.MinNetPacketType.USER_ENTER_ROOM:
-                    UserEnterRoom();
+                    UserEnterRoom(packet);
                     break;
 
                 case Defines.MinNetPacketType.USER_LEAVE_ROOM:
@@ -187,7 +187,7 @@ namespace MinNetforUnity
     public class Defines
     {
         public static readonly short HEADERSIZE = 2 + 4;// short로 몸체의 크기를 나타내고, int로 주고받을 패킷 타입 열거형을 나타냄
-        public enum MinNetPacketType { OTHER_USER_ENTER_ROOM = -8200, OTHER_USER_LEAVE_ROOM, USER_ENTER_ROOM, USER_LEAVE_ROOM, OBJECT_INSTANTIATE, OBJECT_DESTROY, PING, PONG, PING_CAST, RPC, ID_CAST };
+        public enum MinNetPacketType { OTHER_USER_ENTER_ROOM = -8200, OTHER_USER_LEAVE_ROOM, USER_ENTER_ROOM, USER_LEAVE_ROOM, OBJECT_INSTANTIATE, OBJECT_DESTROY, PING, PONG, PING_CAST, RPC, ID_CAST, CREATE_ROOM };
     }
 
     public static class MinNetUser : object
@@ -354,6 +354,41 @@ namespace MinNetforUnity
             }
 
             methodBase.Invoke(obj.gameObject.GetComponent(componentType), parameters);
+        }
+
+        public static void EnterRoom(string roomName)
+        {
+            var packet = new MinNetPacket();
+
+            packet.create_packet((int)Defines.MinNetPacketType.USER_ENTER_ROOM);
+            packet.push(-2);
+            packet.push(roomName);
+            packet.create_header();
+
+            Send(packet);
+        }
+
+        public static void EnterRoom(int roomNumber)
+        {
+            var packet = new MinNetPacket();
+
+            packet.create_packet((int)Defines.MinNetPacketType.USER_ENTER_ROOM);
+            packet.push(roomNumber);
+            packet.push("");
+            packet.create_header();
+
+            Send(packet);
+        }
+
+        public static void CreateRoom(string roomName)
+        {
+            var packet = new MinNetPacket();
+
+            packet.create_packet((int)Defines.MinNetPacketType.CREATE_ROOM);
+            packet.push(roomName);
+            packet.create_header();
+
+            Send(packet);
         }
 
         public static void SendRPC(int id, string componentName, string methodName, MinNetRpcTarget target, params object[] parameters)
