@@ -54,9 +54,9 @@ namespace MinNetforUnity
     public class MonoBehaviourMinNet : MonoBehaviour
     {
         [HideInInspector]
-        public int objectId;
+        public int objectId = -1;
         [HideInInspector]
-        public string prefabName;
+        public string prefabName = "";
         [HideInInspector]
         public Queue<RPCstorage> sendRPCq = new Queue<RPCstorage>();
         [HideInInspector]
@@ -90,6 +90,11 @@ namespace MinNetforUnity
         }
 
         public virtual void OtherUserLeaveRoom()
+        {
+
+        }
+
+        public virtual void OnSetID(int objectID)
         {
 
         }
@@ -157,6 +162,11 @@ namespace MinNetforUnity
                 case Defines.MinNetPacketType.RPC:
                     MinNetUser.ObjectRPC(packet);
                     break;
+
+                case Defines.MinNetPacketType.ID_CAST:
+                    MinNetUser.IdCast(packet);
+                    break;
+
             }
         }
 
@@ -190,7 +200,8 @@ namespace MinNetforUnity
 
         private static Socket socket = null;
         private static int ping = 20;
-        public static int ServerTime;// 서버가 시작된 후로 부터 흐른 시간 ms단위
+        private static int serverTime = 0;// 서버가 시작된 후로 부터 흐른 시간 ms단위
+        private static DateTime lastSyncTime = DateTime.Now;
 
         public static int Ping
         {
@@ -201,6 +212,19 @@ namespace MinNetforUnity
             private set
             {
                 ping = value;
+            }
+        }
+
+        public static int ServerTime
+        {
+            get
+            {
+                return serverTime + (int)((DateTime.Now - lastSyncTime).Ticks * 0.0001f);
+            }
+            private set
+            {
+                serverTime = value;
+                lastSyncTime = DateTime.Now;
             }
         }
 
@@ -361,7 +385,7 @@ namespace MinNetforUnity
             Send(pong);
         }
 
-        private static void IdCast(MinNetPacket packet)
+        public static void IdCast(MinNetPacket packet)
         {
             string prefabName = packet.pop_string();
             int id = packet.pop_int();
@@ -374,6 +398,7 @@ namespace MinNetforUnity
                 {
                     obj.objectId = id;
                     networkObjectDictionary.Add(id, obj);
+                    obj.OnSetID(id);
                     while(obj.sendRPCq.Count > 0)
                     {
                         RPCstorage storage = obj.sendRPCq.Dequeue();
@@ -480,10 +505,6 @@ namespace MinNetforUnity
                 case Defines.MinNetPacketType.PING_CAST:
                     Ping = packet.pop_int();
                     ServerTime = packet.pop_int() - (int)(Ping * 0.5f);
-                    break;
-
-                case Defines.MinNetPacketType.ID_CAST:
-                    IdCast(packet);
                     break;
 
                 default:
