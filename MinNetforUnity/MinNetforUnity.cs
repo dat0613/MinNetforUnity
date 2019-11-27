@@ -12,15 +12,6 @@ namespace MinNetforUnity
     using eventSet = Tuple<Socket, CallBack>;
     public delegate void CallBack(Exception e);
 
-    //[AttributeUsage(AttributeTargets.Method)]
-    //public class MinNetRPCAttribute : Attribute
-    //{
-    //    public void test()
-    //    {
-    //
-    //    }
-    //}
-
     public enum MinNetRpcTarget { All = -1000, Others, AllViaServer, Server };
 
     public class MonoBehaviourMinNetCallBack : MonoBehaviour
@@ -196,6 +187,10 @@ namespace MinNetforUnity
         private static Dictionary<int, MonoBehaviourMinNet> networkObjectDictionary = new Dictionary<int, MonoBehaviourMinNet>();// 서버와 동기화 되는 객체들을 모아두는 곳
         private static Dictionary<string, GameObject> networkObjectCache = new Dictionary<string, GameObject>();// 각종 객체들의 캐시
 
+        private static Dictionary<string, Type> componentCache = new Dictionary<string, Type>();// 리플렉션사용의 최소화를 위해 한번 찾아낸 컴포넌트는 미리 저장해둠
+        private static Dictionary<Type, Dictionary<string, MethodBase>> methodCache = new Dictionary<Type, Dictionary<string, MethodBase>>();// 한번 찾은 함수도 미리 저장해 둠, 첫 키값은 컴포넌트의 이름, 다음 키값은 함수의 이름
+        private static Dictionary<MethodBase, Tuple<ParameterInfo[], object[]>> parameterCache = new Dictionary<MethodBase, Tuple<ParameterInfo[], object[]>>();// 함수의 파라미터 타입과 파라미터를 넣을때 사용할 배열을 미리 저장해 두어 new를 최소화 함
+
         public static Queue<MinNetPacket> packetQ = new Queue<MinNetPacket>();
 
         private static Socket socket = null;
@@ -322,6 +317,93 @@ namespace MinNetforUnity
             }
         }
 
+        private static Type GetComponentType(string componentName)
+        {
+            Type type = null;
+            if(componentCache.TryGetValue(componentName, out type))
+            {// 이미 저장된 컴포넌트가 있음
+            }
+            else
+            {// 아직 저장된 컴포넌트가 없음
+                type = System.Reflection.Assembly.Load("Assembly-CSharp").GetType(componentName);// 타입 검색
+                if (type == null)
+                {// 검색 실패시 새로운 방법으로 검색
+                    type = Type.GetType(componentName);
+                    if (type == null)// 이것 까지 실패하면 답이 없음
+                    {
+                        Debug.Log("RPC를 사용할 컴포넌트를 찾을 수 없습니다.");
+                    }
+                }
+                componentCache.Add(componentName, type);// 한번 찾지 못한 컴포넌트 타입은 앞으로도 못찾기 때문에 null로 저장해둠
+            }
+            return type;
+        }
+
+        private static MethodBase GetMethod(Type componentType, string methodName)
+        {
+            var methodMap = GetMethodMap(componentType);
+            MethodBase methodBase = null;
+            if (methodMap.TryGetValue(methodName, out methodBase))
+            {// 해당 함수가 캐시에 있음
+            }
+            else
+            {// 없음
+                methodBase = componentType.GetMethod(methodName);
+                if(methodBase == null)
+                {// 해당 이름을 가진 함수를 찾지 못함
+                    Debug.Log("RPC를 사용할 함수를 찾을 수 없습니다.");
+                }
+
+                methodMap.Add(methodName, methodBase);// 새롭게 찾은 함수를 넣음
+            }
+
+            return methodBase;
+        }
+
+        private static Dictionary<string, MethodBase> GetMethodMap(Type componentType)
+        {
+            Dictionary<string, MethodBase> methodMap = null;
+            if (methodCache.TryGetValue(componentType, out methodMap))
+            {// 해당 컴포넌트에 대한 함수 캐시가 있음
+            }
+            else
+            {// 없으면 새롭게 만들어 주고 캐시에 넣음
+                methodMap = new Dictionary<string, MethodBase>();
+                methodCache.Add(componentType, methodMap);
+            }
+
+            return methodMap;
+        }
+
+        private static void CallMethod(MonoBehaviourMinNet obj, Type componentType, MethodBase methodBase, MinNetPacket packet)
+        {
+            Tuple<ParameterInfo[], object[]> tuple = null;
+            ParameterInfo[] parameterInfos = null;
+            object[] parameters = null;
+
+            if (parameterCache.TryGetValue(methodBase, out tuple))
+            {// 해당 함수의 파라미터 정보에 대한 캐시가 있음
+                parameterInfos = tuple.Item1;
+                parameters = tuple.Item2;
+            }
+            else
+            {// 없으면 정보를 알아내고 캐시에 넣음
+                parameterInfos = methodBase.GetParameters();
+                parameters = new object[parameterInfos.Length];// parameters는 배열을 미리 할당해 두기 위함임. 여기 들어간 값을 저장할 필요는 없음
+
+                tuple = new Tuple<ParameterInfo[], object[]>(parameterInfos, parameters);
+
+                parameterCache.Add(methodBase, tuple);
+            }
+
+            for(int i = 0; i < parameterInfos.Length; i++)
+            {
+                parameters[i] = packet.pop(parameterInfos[i].ParameterType);
+            }
+
+            methodBase.Invoke(obj.gameObject.GetComponent(componentType), parameters);
+        }
+
         private static void ObjectRPC(MonoBehaviourMinNet obj, MinNetPacket packet)
         {
             string componentName = packet.pop_string();
@@ -329,31 +411,15 @@ namespace MinNetforUnity
 
             int target = packet.pop_int();
 
-            Type componentType = System.Reflection.Assembly.Load("Assembly-CSharp").GetType(componentName);
+            var componentType = GetComponentType(componentName);
             if (componentType == null)
-            {
-                componentType = Type.GetType(componentName);
-                if(componentType == null)
-                {
-                    Debug.Log("RPC를 사용할 컴포넌트를 찾을 수 없습니다.");
-                    return;
-                }
-            }
-            MethodBase methodBase = componentType.GetMethod(methodName);
-            if (methodBase == null)
-            {
-                Debug.Log("RPC를 사용할 함수를 찾을 수 없습니다.");
                 return;
-            }
 
-            ParameterInfo[] infoarr = methodBase.GetParameters();
-            object[] parameters = new object[infoarr.Length];
-            for (int i = 0; i < infoarr.Length; i++)
-            {
-                parameters[i] = packet.pop(infoarr[i].ParameterType);
-            }
+            var methodBase = GetMethod(componentType, methodName); 
+            if (methodBase == null)
+                return;
 
-            methodBase.Invoke(obj.gameObject.GetComponent(componentType), parameters);
+            CallMethod(obj, componentType, methodBase, packet);
         }
 
         public static void EnterRoom(string roomName)
