@@ -29,35 +29,125 @@ namespace MinNetforUnity
 
     public class RPCstorage
     {
-        public RPCstorage(string methodName, MinNetRpcTarget target, object[] parameters)
+        public RPCstorage(string componentName,string methodName, MinNetRpcTarget target, object[] parameters)
         {
+            this.componentName = componentName;
             this.methodName = methodName;
             this.target = target;
             this.parameters = parameters;
         }
 
+        public string componentName;
         public string methodName;
         public MinNetRpcTarget target;
         public object[] parameters;
     }
 
+    public class MinNetView : MonoBehaviour
+    {
+        [HideInInspector]
+        public bool isMine = false;
+
+        [HideInInspector]
+        public int objectId = -1;
+
+        [HideInInspector]
+        public string prefabName = "";
+
+        [HideInInspector]
+        public Queue<RPCstorage> sendRPCq = new Queue<RPCstorage>();
+
+        private Dictionary<string, MonoBehaviourMinNet> minnetComponentMap = new Dictionary<string, MonoBehaviourMinNet>();
+        public List<MonoBehaviourMinNet> minnetComponents;
+
+        public void SetIsMine(bool isMine)
+        {
+            this.isMine = isMine;
+            foreach (var component in minnetComponents)
+            {
+                component.isMine = isMine;
+            }
+        }
+
+        void Awake()
+        {
+            foreach(var component in minnetComponents)
+            {
+                component.minnetView = this;
+                minnetComponentMap.Add(component.GetComponentName(), component);
+            }
+        }
+
+        public void SetID(int objectId)
+        {
+            this.objectId = objectId;
+
+            foreach (var component in minnetComponents)
+            {
+                component.objectId = objectId;
+            }
+        }
+
+        public void OnSetID(int objectId)
+        {
+            foreach (var component in minnetComponents)
+            {
+                component.OnSetID(objectId);
+            }
+        }
+
+        public void OtherUserEnterRoom()
+        {
+            foreach (var component in minnetComponents)
+            {
+                component.OtherUserEnterRoom();
+            }
+        }
+
+        public void OtherUserLeaveRoom()
+        {
+            foreach (var component in minnetComponents)
+            {
+                component.OtherUserLeaveRoom();
+            }
+        }
+
+        public void RPC(string componentName, string methodName, MinNetRpcTarget target, params object[] parameters)
+        {
+            MinNetUser.SendRPC(objectId, componentName, methodName, target, parameters);
+        }
+    }
 
     public class MonoBehaviourMinNet : MonoBehaviour
     {
         [HideInInspector]
+        public bool isMine = false;
+        [HideInInspector]
         public int objectId = -1;
         [HideInInspector]
-        public string prefabName = "";
+        public MinNetView minnetView = null;
         [HideInInspector]
-        public Queue<RPCstorage> sendRPCq = new Queue<RPCstorage>();
-        [HideInInspector]
-        public bool isMine = false;
+        public string componentName = "";
+
+        public string GetComponentName()
+        {
+            return GetType().ToString();
+        }
 
         public void RPC(string methodName, MinNetRpcTarget target, params object[] parameters)
         {
-            if(objectId < 0)
+            if (componentName == "")
+                componentName = GetComponentName();
+
+            if (minnetView == null)
+            {
+                Debug.LogError("MonoBehaviourMinNet을 사용하려면 MinNetView 컴포넌트가 있어야 합니다.");
+                return;
+            }
+
+            if (minnetView.objectId < 0)
             {// 아직 서버로 부터 id를 발급 받지 못한 오브젝트
-                sendRPCq.Enqueue(new RPCstorage(methodName, target, parameters));
+                minnetView.sendRPCq.Enqueue(new RPCstorage(componentName, methodName, target, parameters));
                 return;
             }
 
@@ -66,8 +156,7 @@ namespace MinNetforUnity
                 GetType().GetMethod(methodName).Invoke(this, parameters);
             }
 
-
-            MinNetUser.SendRPC(objectId, GetType().ToString(), methodName, target, parameters);
+            minnetView.RPC(componentName, methodName, target, parameters);
         }
 
         public void RPC(string methodName, MinNetRpcTarget target)
@@ -157,7 +246,6 @@ namespace MinNetforUnity
                 case Defines.MinNetPacketType.ID_CAST:
                     MinNetUser.IdCast(packet);
                     break;
-
             }
         }
 
@@ -173,8 +261,6 @@ namespace MinNetforUnity
         }
     }
 
-
-
     public class Defines
     {
         public static readonly short HEADERSIZE = 2 + 4;// short로 몸체의 크기를 나타내고, int로 주고받을 패킷 타입 열거형을 나타냄
@@ -183,8 +269,8 @@ namespace MinNetforUnity
 
     public static class MinNetUser : object
     {
-        private static Queue<MonoBehaviourMinNet> waitIdObject = new Queue<MonoBehaviourMinNet>();// 서버로 부터 id부여를 기다리는 객체들이 임시적으로 있을 곳
-        private static Dictionary<int, MonoBehaviourMinNet> networkObjectDictionary = new Dictionary<int, MonoBehaviourMinNet>();// 서버와 동기화 되는 객체들을 모아두는 곳
+        private static Queue<MinNetView> waitIdObject = new Queue<MinNetView>();// 서버로 부터 id부여를 기다리는 객체들이 임시적으로 있을 곳
+        private static Dictionary<int, MinNetView> networkObjectDictionary = new Dictionary<int, MinNetView>();// 서버와 동기화 되는 객체들을 모아두는 곳
         private static Dictionary<string, GameObject> networkObjectCache = new Dictionary<string, GameObject>();// 각종 객체들의 캐시
 
         private static Dictionary<string, Type> componentCache = new Dictionary<string, Type>();// 리플렉션사용의 최소화를 위해 한번 찾아낸 컴포넌트는 미리 저장해둠
@@ -242,13 +328,13 @@ namespace MinNetforUnity
         public static void ObjectInstantiate(string prefabName, Vector3 position, Vector3 euler, int id)
         {
             GameObject prefab = null;
-            MonoBehaviourMinNet obj = null;
+            MinNetView obj = null;
             Quaternion qu = new Quaternion();
             qu.eulerAngles = euler;
 
             if (networkObjectCache.TryGetValue(prefabName, out prefab))
             {
-                obj = GameObject.Instantiate(prefab, position, qu).GetComponent<MonoBehaviourMinNet>();
+                obj = GameObject.Instantiate(prefab, position, qu).GetComponent<MinNetView>();
             }
             else
             {
@@ -262,16 +348,16 @@ namespace MinNetforUnity
 
                 networkObjectCache.Add(prefabName, prefab);
 
-                obj = GameObject.Instantiate(prefab, position, qu).GetComponent<MonoBehaviourMinNet>();
+                obj = GameObject.Instantiate(prefab, position, qu).GetComponent<MinNetView>();
             }
 
             if (obj == null)
             {
-                Debug.LogError(prefabName + " 객체는 MonoBehaviourMinNet 컴포넌트를 가지고 있지 않습니다.");
+                Debug.LogError(prefabName + " 객체는 MinNetView 컴포넌트를 가지고 있지 않습니다.");
                 return;
             }
 
-            obj.objectId = id;
+            obj.SetID(id);
             obj.prefabName = prefabName;
             networkObjectDictionary.Add(id, obj);
         }
@@ -283,7 +369,7 @@ namespace MinNetforUnity
 
         private static void ObjectDestroy(string name, int id)
         {
-            MonoBehaviourMinNet obj = null;
+            MinNetView obj = null;
             if (networkObjectDictionary.TryGetValue(id, out obj))
             {
                 if (string.Equals(obj.prefabName, name))
@@ -302,10 +388,9 @@ namespace MinNetforUnity
             }
         }
 
-
         public static void ObjectRPC(MinNetPacket packet)
         {
-            MonoBehaviourMinNet obj = null;
+            MinNetView obj = null;
             int id = packet.pop_int();
             if (networkObjectDictionary.TryGetValue(id, out obj))
             {
@@ -375,7 +460,7 @@ namespace MinNetforUnity
             return methodMap;
         }
 
-        private static void CallMethod(MonoBehaviourMinNet obj, Type componentType, MethodBase methodBase, MinNetPacket packet)
+        private static void CallMethod(MinNetView obj, Type componentType, MethodBase methodBase, MinNetPacket packet)
         {
             Tuple<ParameterInfo[], object[]> tuple = null;
             ParameterInfo[] parameterInfos = null;
@@ -404,7 +489,7 @@ namespace MinNetforUnity
             methodBase.Invoke(obj.gameObject.GetComponent(componentType), parameters);
         }
 
-        private static void ObjectRPC(MonoBehaviourMinNet obj, MinNetPacket packet)
+        private static void ObjectRPC(MinNetView obj, MinNetPacket packet)
         {
             string componentName = packet.pop_string();
             string methodName = packet.pop_string();
@@ -497,13 +582,14 @@ namespace MinNetforUnity
 
                 if(string.Equals(prefabName, obj.prefabName))
                 {
-                    obj.objectId = id;
+                    obj.SetID(id);
                     networkObjectDictionary.Add(id, obj);
                     obj.OnSetID(id);
+
                     while(obj.sendRPCq.Count > 0)
                     {
                         RPCstorage storage = obj.sendRPCq.Dequeue();
-                        obj.RPC(storage.methodName, storage.target, storage.parameters);
+                        obj.RPC(storage.componentName, storage.methodName, storage.target, storage.parameters);
                     }
                 }
                 else
@@ -534,19 +620,19 @@ namespace MinNetforUnity
         {
             UnityEngine.Object obj = GameObject.Instantiate(original, position, rotation);
 
-            MonoBehaviourMinNet minnetobj = ((GameObject)obj).GetComponent<MonoBehaviourMinNet>();
+            MinNetView minnetView = ((GameObject)obj).GetComponent<MinNetView>();
 
 
-            if(minnetobj == null)
+            if(minnetView == null)
             {
-                Debug.LogError(obj.name + " 오브젝트는 MonoBehaviourMinNet 컴포넌트를 가지고 있지 않습니다");
+                Debug.LogError(obj.name + " 오브젝트는 MinNetView 컴포넌트를 가지고 있지 않습니다");
                 return null;
             }
 
-            minnetobj.isMine = true;
-            minnetobj.prefabName = original.name;
+            minnetView.SetIsMine(true);
+            minnetView.prefabName = original.name;
 
-            waitIdObject.Enqueue(minnetobj);
+            waitIdObject.Enqueue(minnetView);
             SendInstantiate(original.name, position, rotation.eulerAngles, autoDelete);
 
             return obj;
@@ -556,32 +642,31 @@ namespace MinNetforUnity
         {
             T obj = GameObject.Instantiate(original, position, rotation);
 
-            MonoBehaviourMinNet minnetobj = (obj as GameObject).GetComponent<MonoBehaviourMinNet>();
+            MinNetView minnetView = (obj as GameObject).GetComponent<MinNetView>();
 
 
-            if (minnetobj == null)
+            if (minnetView == null)
             {
-                Debug.LogError(obj.name + " 오브젝트는 MonoBehaviourMinNet 컴포넌트를 가지고 있지 않습니다");
+                Debug.LogError(obj.name + " 오브젝트는 MinNetView 컴포넌트를 가지고 있지 않습니다");
                 return null;
             }
 
-            minnetobj.isMine = true;
-            minnetobj.prefabName = original.name;
+            minnetView.SetIsMine(true);
+            minnetView.prefabName = original.name;
 
-            waitIdObject.Enqueue(minnetobj);
-            MinNetUser.
-            SendInstantiate(original.name, position, rotation.eulerAngles, autoDelete);
+            waitIdObject.Enqueue(minnetView);
+            MinNetUser.SendInstantiate(original.name, position, rotation.eulerAngles, autoDelete);
 
             return obj;
         }
 
         public static void Destroy(UnityEngine.Object obj)
         {
-            MonoBehaviourMinNet minnetobj = ((GameObject)obj).GetComponent<MonoBehaviourMinNet>();
+            MinNetView minnetobj = ((GameObject)obj).GetComponent<MinNetView>();
 
             if(minnetobj == null)
             {
-                Debug.LogError(obj.name + " 오브젝트는 MonoBehaviourMinNet 컴포넌트를 가지고 있지 않습니다.");
+                Debug.LogError(obj.name + " 오브젝트는 MinNetView 컴포넌트를 가지고 있지 않습니다.");
                 return;
             }
 
@@ -593,7 +678,6 @@ namespace MinNetforUnity
 
             Send(packet);
         }
-
 
         private static void PacketHandler(MinNetPacket packet)
         {
@@ -773,7 +857,6 @@ namespace MinNetforUnity
                 DisconnectToServer();
             }
         }
-
 
         private static void ConnectCallBack(IAsyncResult ar)
         {
@@ -1020,6 +1103,7 @@ namespace MinNetforUnity
             }
             return null;
         }
+
         public void push(object obj)
         {
             Type type = obj.GetType();
