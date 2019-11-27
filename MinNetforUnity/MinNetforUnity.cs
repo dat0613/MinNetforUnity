@@ -182,6 +182,11 @@ namespace MinNetforUnity
 
     public class MinNetPacketHandler : MonoBehaviour
     {
+        void Awake()
+        {
+            DontDestroyOnLoad(gameObject);
+        }
+
         private void UserEnterRoom(MinNetPacket packet)
         {
             var callbacks = GameObject.FindObjectsOfType<MonoBehaviourMinNetCallBack>();
@@ -705,7 +710,7 @@ namespace MinNetforUnity
         {
             try
             {
-                var handler = new GameObject("handler");
+                var handler = new GameObject("MinNetHandler");
                 handler.AddComponent<MinNetPacketHandler>();
 
                 IPEndPoint remoteEP = new IPEndPoint(IPAddress.Parse(ip), port);
@@ -718,8 +723,8 @@ namespace MinNetforUnity
             }
             catch (Exception e)
             {
+                Debug.Log(e.ToString());
                 callback?.Invoke(e);
-                //Debug.Log(e.ToString());
             }
         }
 
@@ -727,13 +732,14 @@ namespace MinNetforUnity
         {
             try
             {
-                socket.BeginDisconnect(false, CloseCallBack, socket);
-                callback?.Invoke(null);
+                eventSet es = new eventSet(socket, callback);
+
+                socket.BeginDisconnect(false, CloseCallBack, es);
             }
             catch (Exception e)
             {
                 callback?.Invoke(e);
-                //Debug.Log(e.ToString());
+                Debug.Log(e.ToString());
             }
         }
 
@@ -865,22 +871,24 @@ namespace MinNetforUnity
             {
                 es.Item1.EndConnect(ar);
                 Debug.LogFormat("Socket connected to {0}", es.Item1.RemoteEndPoint.ToString());
+                es.Item2?.Invoke(null);
 
                 StartRecvHead();
             }
             catch (Exception e)
             {
-                es?.Item2.Invoke(e);
+                es.Item2?.Invoke(e);
                 Debug.Log(e.ToString());
             }
         }
 
         private static void CloseCallBack(IAsyncResult ar)
         {
+            eventSet es = (eventSet)ar.AsyncState;
             try
             {
                 socket.EndDisconnect(ar);
-
+                es.Item2?.Invoke(null);
                 Debug.Log("연결 끊음");
             }
             catch (Exception e)
