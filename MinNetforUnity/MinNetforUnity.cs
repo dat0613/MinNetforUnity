@@ -6,6 +6,8 @@ using System.Net.Sockets;
 using System.Net;
 using UnityEngine;
 using System.Reflection;
+using System.Collections;
+using UnityEngine.SceneManagement;
 
 namespace MinNetforUnity
 {
@@ -22,6 +24,11 @@ namespace MinNetforUnity
         }
 
         public virtual void UserLeaveRoom()
+        {
+
+        }
+
+        public virtual void UserEnterRoomFail(int roomNumber, string reason)
         {
 
         }
@@ -182,26 +189,42 @@ namespace MinNetforUnity
 
     public class MinNetPacketHandler : MonoBehaviour
     {
+        Queue<MinNetPacket> packetQ = new Queue<MinNetPacket>();
         void Awake()
         {
             DontDestroyOnLoad(gameObject);
         }
 
+        private MonoBehaviourMinNetCallBack[] GetCallBackComponents()
+        {
+            return GameObject.FindObjectsOfType<MonoBehaviourMinNetCallBack>();
+        }
+
         private void UserEnterRoom(MinNetPacket packet)
         {
-            var callbacks = GameObject.FindObjectsOfType<MonoBehaviourMinNetCallBack>();
-            foreach (var callback in callbacks)
+            var components = GetCallBackComponents();
+            foreach (var component in components)
             {
-                callback.UserEnterRoom(packet.pop_int(), packet.pop_string());
+                component.UserEnterRoom(packet.pop_int(), packet.pop_string());
             }
         }
 
         private void UserLeaveRoom()
         {
-            var callbacks = GameObject.FindObjectsOfType<MonoBehaviourMinNetCallBack>();
-            foreach (var callback in callbacks)
+            var components = GetCallBackComponents();
+            foreach (var component in components)
             {
-                callback.UserLeaveRoom();
+                component.UserLeaveRoom();
+            }
+        }
+
+        private void UserEnterRoomFail(MinNetPacket packet)
+        {
+            var components = GetCallBackComponents();
+
+            foreach (var component in components)
+            {
+                component.UserEnterRoomFail(packet.pop_int(), packet.pop_string());
             }
         }
 
@@ -214,6 +237,27 @@ namespace MinNetforUnity
                 packet.pop_vector3(),
                 packet.pop_int()
             );
+        }
+
+        private void ChangeScene(MinNetPacket packet)
+        {
+            string sceneName = packet.pop_string();
+
+            if (String.IsNullOrEmpty(sceneName))
+                return;
+
+            // 새로운 씬을 로딩할 동안에는 잠시동안 패킷 핸들러를 멈추어야 함
+            //MinNetUser.StopSync = true;
+            if (MinNetUser.loadSceneDelegate != null)
+            {// 델리게이트가 있으면 비동기로 처리함
+                StartCoroutine(MinNetUser.loadSceneDelegate(sceneName));
+            }
+            else
+            {// 없으면 그냥 처리함
+                SceneManager.LoadScene(sceneName);
+                MinNetUser.LoadingComplete();
+                //MinNetUser.StopSync = false;
+            }
         }
 
         private void PacketHandler(MinNetPacket packet)
@@ -251,17 +295,28 @@ namespace MinNetforUnity
                 case Defines.MinNetPacketType.ID_CAST:
                     MinNetUser.IdCast(packet);
                     break;
+
+                case Defines.MinNetPacketType.CHANGE_SCENE:
+                    ChangeScene(packet);
+                    break;
             }
+
+            MinNetUser.PushPacket(packet);
         }
 
         void Update()
         {
-            lock(MinNetUser.packetQ)
+            lock (MinNetUser.packetQ)
             {
-                while(MinNetUser.packetQ.Count > 0)
+                while (MinNetUser.packetQ.Count > 0)
                 {
-                    PacketHandler(MinNetUser.packetQ.Dequeue());
+                    packetQ.Enqueue(MinNetUser.packetQ.Dequeue());// 오랫동안 lock 되는걸 방지하기 위해 패킷들을 미리 가저옴
                 }
+            }
+
+            while(packetQ.Count > 0)
+            {
+                PacketHandler(packetQ.Dequeue());
             }
         }
     }
@@ -269,11 +324,29 @@ namespace MinNetforUnity
     public class Defines
     {
         public static readonly short HEADERSIZE = 2 + 4;// short로 몸체의 크기를 나타내고, int로 주고받을 패킷 타입 열거형을 나타냄
-        public enum MinNetPacketType { OTHER_USER_ENTER_ROOM = -8200, OTHER_USER_LEAVE_ROOM, USER_ENTER_ROOM, USER_LEAVE_ROOM, OBJECT_INSTANTIATE, OBJECT_DESTROY, PING, PONG, PING_CAST, RPC, ID_CAST, CREATE_ROOM };
+        public enum MinNetPacketType
+        {
+            OTHER_USER_ENTER_ROOM = -8200,
+            OTHER_USER_LEAVE_ROOM,
+            USER_ENTER_ROOM,
+            USER_LEAVE_ROOM,
+            OBJECT_INSTANTIATE,
+            OBJECT_DESTROY,
+            PING,
+            PONG,
+            PING_CAST,
+            RPC,
+            ID_CAST,
+            CREATE_ROOM,
+            CHANGE_SCENE,
+            USER_ENTER_ROOM_FAIL,
+            CHANGE_SCENE_COMPLETE
+        };
     }
 
     public static class MinNetUser : object
     {
+        public delegate IEnumerator LoadSceneDelegate(string sceneName);
         private static Queue<MinNetView> waitIdObject = new Queue<MinNetView>();// 서버로 부터 id부여를 기다리는 객체들이 임시적으로 있을 곳
         private static Dictionary<int, MinNetView> networkObjectDictionary = new Dictionary<int, MinNetView>();// 서버와 동기화 되는 객체들을 모아두는 곳
         private static Dictionary<string, GameObject> networkObjectCache = new Dictionary<string, GameObject>();// 각종 객체들의 캐시
@@ -283,11 +356,53 @@ namespace MinNetforUnity
         private static Dictionary<MethodBase, Tuple<ParameterInfo[], object[]>> parameterCache = new Dictionary<MethodBase, Tuple<ParameterInfo[], object[]>>();// 함수의 파라미터 타입과 파라미터를 넣을때 사용할 배열을 미리 저장해 두어 new를 최소화 함
 
         public static Queue<MinNetPacket> packetQ = new Queue<MinNetPacket>();
+        private static Queue<MinNetPacket> packetPool = new Queue<MinNetPacket>();
 
         private static Socket socket = null;
         private static int ping = 20;
         private static int serverTime = 0;// 서버가 시작된 후로 부터 흐른 시간 ms단위
         private static DateTime lastSyncTime = DateTime.Now;
+
+        public static LoadSceneDelegate loadSceneDelegate = null;
+
+        public static bool StopSync = false;
+
+        public static void LoadingComplete()
+        {
+            MinNetPacket packet = packetPool.Dequeue();
+            packet.create_packet((int)Defines.MinNetPacketType.CHANGE_SCENE_COMPLETE);
+            packet.create_header();
+            Send(packet);
+        }
+
+        public static MinNetPacket PopPacket()
+        {
+            MinNetPacket retval = null;
+
+            lock(packetPool)
+            {
+                if (packetPool.Count > 0)
+                {
+                    retval = packetPool.Dequeue();
+                }
+                else
+                {
+                    retval = new MinNetPacket();
+                }
+            }
+
+            return retval;
+        }
+
+        public static void PushPacket(MinNetPacket packet)
+        {
+            packet.Clear();
+
+            lock(packetPool)
+            {
+                packetPool.Enqueue(packet);
+            }
+        }
 
         public static int Ping
         {
@@ -496,6 +611,9 @@ namespace MinNetforUnity
 
         private static void ObjectRPC(MinNetView obj, MinNetPacket packet)
         {
+            if (obj == null)
+                return;
+
             string componentName = packet.pop_string();
             string methodName = packet.pop_string();
 
@@ -514,7 +632,7 @@ namespace MinNetforUnity
 
         public static void EnterRoom(string roomName)
         {
-            var packet = new MinNetPacket();
+            var packet = MinNetUser.PopPacket();
 
             packet.create_packet((int)Defines.MinNetPacketType.USER_ENTER_ROOM);
             packet.push(-2);
@@ -526,7 +644,7 @@ namespace MinNetforUnity
 
         public static void EnterRoom(int roomNumber)
         {
-            var packet = new MinNetPacket();
+            var packet = MinNetUser.PopPacket();
 
             packet.create_packet((int)Defines.MinNetPacketType.USER_ENTER_ROOM);
             packet.push(roomNumber);
@@ -538,7 +656,7 @@ namespace MinNetforUnity
 
         public static void CreateRoom(string roomName)
         {
-            var packet = new MinNetPacket();
+            var packet = MinNetUser.PopPacket();
 
             packet.create_packet((int)Defines.MinNetPacketType.CREATE_ROOM);
             packet.push(roomName);
@@ -549,7 +667,7 @@ namespace MinNetforUnity
 
         public static void SendRPC(int id, string componentName, string methodName, MinNetRpcTarget target, params object[] parameters)
         {
-            MinNetPacket packet = new MinNetPacket();
+            MinNetPacket packet = MinNetUser.PopPacket();
             packet.create_packet((int)Defines.MinNetPacketType.RPC);
             packet.push(id);
             packet.push(componentName);
@@ -570,7 +688,7 @@ namespace MinNetforUnity
 
         private static void AnswerPing()
         {
-            MinNetPacket pong = new MinNetPacket();
+            MinNetPacket pong = MinNetUser.PopPacket();
             pong.create_packet((int)Defines.MinNetPacketType.PONG);
             pong.create_header();
             Send(pong);
@@ -610,7 +728,7 @@ namespace MinNetforUnity
 
         private static void SendInstantiate(string prefabName, Vector3 position, Vector3 euler, bool autoDelete)
         {
-            MinNetPacket packet = new MinNetPacket();
+            MinNetPacket packet = MinNetUser.PopPacket();
             packet.create_packet((int)Defines.MinNetPacketType.OBJECT_INSTANTIATE);
             packet.push(prefabName);
             packet.push(position);
@@ -675,7 +793,7 @@ namespace MinNetforUnity
                 return;
             }
 
-            MinNetPacket packet = new MinNetPacket();
+            MinNetPacket packet = MinNetUser.PopPacket();
             packet.create_packet((int)Defines.MinNetPacketType.OBJECT_DESTROY);
             packet.push(minnetobj.prefabName);
             packet.push(minnetobj.objectId);
@@ -690,11 +808,13 @@ namespace MinNetforUnity
             {
                 case Defines.MinNetPacketType.PING:
                     AnswerPing();
+                    MinNetUser.PushPacket(packet);
                     break;
 
                 case Defines.MinNetPacketType.PING_CAST:
                     Ping = packet.pop_int();
                     ServerTime = packet.pop_int() - (int)(Ping * 0.5f);
+                    MinNetUser.PushPacket(packet);
                     break;
 
                 default:
@@ -710,8 +830,13 @@ namespace MinNetforUnity
         {
             try
             {
-                var handler = new GameObject("MinNetHandler");
-                handler.AddComponent<MinNetPacketHandler>();
+                var handler = GameObject.Find("MinNetHandler");
+
+                if (handler == null)
+                {
+                    handler = new GameObject("MinNetHandler");
+                    handler.AddComponent<MinNetPacketHandler>();
+                }
 
                 IPEndPoint remoteEP = new IPEndPoint(IPAddress.Parse(ip), port);
 
@@ -720,6 +845,7 @@ namespace MinNetforUnity
                 eventSet es = new eventSet(socket, callback);
 
                 socket.BeginConnect(remoteEP, new AsyncCallback(ConnectCallBack), es);
+
             }
             catch (Exception e)
             {
@@ -747,7 +873,7 @@ namespace MinNetforUnity
         {
             try
             {
-                MinNetPacket packet = new MinNetPacket();// 패킷을 생성
+                MinNetPacket packet = MinNetUser.PopPacket();// 패킷을 생성
 
                 socket.BeginReceive
                 (
@@ -856,6 +982,8 @@ namespace MinNetforUnity
             try
             {
                 socket.EndSend(ar);
+                var packet = (MinNetPacket)ar.AsyncState;
+                MinNetUser.PushPacket(packet);
             }
             catch (Exception e)
             {
@@ -901,10 +1029,16 @@ namespace MinNetforUnity
     public class MinNetPacket : object
     {
         public byte[] buffer;                           //패킷의 전체 몸체
-        public int position;                            //패킷의 전체 몸체에서 제일 끝 바이트를 가리키기 위한 변수
-        public int packet_type;                         //패킷의 헤더를 제일 마지막에 추가시키기 때문에 패킷 타입을 저장해둠
+        public int position = 0;                            //패킷의 전체 몸체에서 제일 끝 바이트를 가리키기 위한 변수
+        public int packet_type = 0;                         //패킷의 헤더를 제일 마지막에 추가시키기 때문에 패킷 타입을 저장해둠
 
         //패킷의 기본적인 골격을 만드는 함수들.
+
+        public void Clear()
+        {
+            packet_type = position = 0;
+            System.Array.Clear(buffer, 0, buffer.Length);
+        }
 
         public MinNetPacket()
         {
