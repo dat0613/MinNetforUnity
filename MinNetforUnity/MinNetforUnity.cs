@@ -299,6 +299,10 @@ namespace MinNetforUnity
                 case Defines.MinNetPacketType.CHANGE_SCENE:
                     ChangeScene(packet);
                     break;
+
+                case Defines.MinNetPacketType.USER_ENTER_ROOM_FAIL:
+                    UserEnterRoomFail(packet);
+                    break;
             }
 
             MinNetUser.PushPacket(packet);
@@ -656,12 +660,25 @@ namespace MinNetforUnity
 
         public static void CreateRoom(string roomName)
         {
+            CreateRoom(roomName, null);
+        }
+
+        public static void CreateRoom(string roomName, params object[] parameters)
+        {
             var packet = MinNetUser.PopPacket();
 
             packet.create_packet((int)Defines.MinNetPacketType.CREATE_ROOM);
             packet.push(roomName);
-            packet.create_header();
 
+            if (parameters != null)
+            {
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    packet.push(parameters.GetValue(i));
+                }
+            }
+
+            packet.create_header();
             Send(packet);
         }
 
@@ -761,22 +778,61 @@ namespace MinNetforUnity
             return obj;
         }
 
-        public static T Instantiate<T>(T original, Vector3 position, Quaternion rotation, bool autoDelete = true) where T : UnityEngine.Object
+        public static GameObject Instantiate(GameObject original)
         {
-            T obj = GameObject.Instantiate(original, position, rotation);
+            return Instantiate(original, Vector3.zero, Quaternion.identity);
+        }
 
-            MinNetView minnetView = (obj as GameObject).GetComponent<MinNetView>();
+        public static GameObject Instantiate(GameObject original, Vector3 position, Quaternion rotation, bool autoDelete = true)
+        {
+            if (original == null)
+            {
+                Debug.LogError("null 오브젝트는 Instantiate할 수 없습니다.");
+                return null;
+            }
+
+            GameObject obj = GameObject.Instantiate(original, position, rotation);
+            MinNetView minnetView = obj.GetComponent<MinNetView>();
 
 
             if (minnetView == null)
             {
                 Debug.LogError(obj.name + " 오브젝트는 MinNetView 컴포넌트를 가지고 있지 않습니다");
+                return obj;
+            }
+            minnetView.SetIsMine(true);
+            minnetView.prefabName = original.name;
+            waitIdObject.Enqueue(minnetView);
+            MinNetUser.SendInstantiate(original.name, position, rotation.eulerAngles, autoDelete);
+
+            return obj;
+        }
+
+        public static T Instantiate<T>(T original) where T : UnityEngine.Object
+        {
+            return Instantiate(original, Vector3.zero, Quaternion.identity);
+        }
+
+        public static T Instantiate<T>(T original, Vector3 position, Quaternion rotation, bool autoDelete = true) where T : UnityEngine.Object
+        {
+            if(original == null)
+            {
+                Debug.LogError("null 오브젝트는 Instantiate할 수 없습니다.");
                 return null;
             }
 
+            T obj = GameObject.Instantiate(original, position, rotation);
+            Component gameObject = obj as Component;
+            MinNetView minnetView = gameObject.GetComponent<MinNetView>();
+
+
+            if (minnetView == null)
+            {
+                Debug.LogError(obj.name + " 오브젝트는 MinNetView 컴포넌트를 가지고 있지 않습니다");
+                return obj;
+            }
             minnetView.SetIsMine(true);
             minnetView.prefabName = original.name;
-
             waitIdObject.Enqueue(minnetView);
             MinNetUser.SendInstantiate(original.name, position, rotation.eulerAngles, autoDelete);
 
@@ -790,6 +846,7 @@ namespace MinNetforUnity
             if(minnetobj == null)
             {
                 Debug.LogError(obj.name + " 오브젝트는 MinNetView 컴포넌트를 가지고 있지 않습니다.");
+                GameObject.Destroy(obj);
                 return;
             }
 
