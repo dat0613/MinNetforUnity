@@ -32,6 +32,11 @@ namespace MinNetforUnity
         {
 
         }
+
+        public virtual void GetUserValue(string key, string value)
+        {
+
+        }
     };
 
     public class RPCstorage
@@ -92,6 +97,7 @@ namespace MinNetforUnity
             foreach (var component in minnetComponents)
             {
                 component.objectId = objectId;
+                component.OnSetID(objectId);
             }
         }
 
@@ -203,14 +209,20 @@ namespace MinNetforUnity
         private void UserEnterRoom(MinNetPacket packet)
         {
             var components = GetCallBackComponents();
+
+            int roomNumber = packet.pop_int();
+            string roomName = packet.pop_string();
+
             foreach (var component in components)
             {
-                component.UserEnterRoom(packet.pop_int(), packet.pop_string());
+                component.UserEnterRoom(roomNumber, roomName);
             }
         }
 
         private void UserLeaveRoom()
         {
+            MinNetUser.ClearNetworkObjectDictionary();
+
             var components = GetCallBackComponents();
             foreach (var component in components)
             {
@@ -222,9 +234,25 @@ namespace MinNetforUnity
         {
             var components = GetCallBackComponents();
 
+            var roomNumber = packet.pop_int();
+            var reason = packet.pop_string();
+
             foreach (var component in components)
             {
-                component.UserEnterRoomFail(packet.pop_int(), packet.pop_string());
+                component.UserEnterRoomFail(roomNumber, reason);
+            }
+        }
+
+        private void GetUserValue(MinNetPacket packet)
+        {
+            var components = GetCallBackComponents();
+
+            var key = packet.pop_string();
+            var value = packet.pop_string();
+
+            foreach (var component in components)
+            {
+                component.GetUserValue(key, value);
             }
         }
 
@@ -248,6 +276,9 @@ namespace MinNetforUnity
 
             // 새로운 씬을 로딩할 동안에는 잠시동안 패킷 핸들러를 멈추어야 함
             //MinNetUser.StopSync = true;
+
+
+
             if (MinNetUser.loadSceneDelegate != null)
             {// 델리게이트가 있으면 비동기로 처리함
                 StartCoroutine(MinNetUser.loadSceneDelegate(sceneName));
@@ -303,6 +334,10 @@ namespace MinNetforUnity
                 case Defines.MinNetPacketType.USER_ENTER_ROOM_FAIL:
                     UserEnterRoomFail(packet);
                     break;
+
+                case Defines.MinNetPacketType.GET_USER_VALUE:
+                    GetUserValue(packet);
+                    break;
             }
 
             MinNetUser.PushPacket(packet);
@@ -344,7 +379,9 @@ namespace MinNetforUnity
             CREATE_ROOM,
             CHANGE_SCENE,
             USER_ENTER_ROOM_FAIL,
-            CHANGE_SCENE_COMPLETE
+            CHANGE_SCENE_COMPLETE,
+            SET_USER_VALUE,
+            GET_USER_VALUE
         };
     }
 
@@ -371,11 +408,74 @@ namespace MinNetforUnity
 
         public static bool StopSync = false;
 
+        public static void ClearNetworkObjectDictionary()
+        {
+            networkObjectDictionary.Clear();
+        }
+
         public static void LoadingComplete()
         {
             MinNetPacket packet = packetPool.Dequeue();
             packet.create_packet((int)Defines.MinNetPacketType.CHANGE_SCENE_COMPLETE);
             packet.create_header();
+            Send(packet);
+        }
+
+        public static void SetUserValue(string key, int value)
+        {
+            SetUserValue(key, value.ToString());
+        }
+
+        public static void SetUserValue(string key, float value)
+        {
+            SetUserValue(key, value.ToString());
+        }
+
+        public static void SetUserValue(string key, bool value)
+        {
+            string str = "";
+            if (value)
+                str = "true";
+            else
+                str = "false";
+
+            SetUserValue(key, str);
+        }
+
+        public static void SetUserValue(string key, string value)
+        {
+            if(string.IsNullOrEmpty(key) || string.IsNullOrWhiteSpace(key))
+            {
+                Debug.LogError("빈 key값은 혀용 되지 않습니다.");
+                return;
+            }
+
+            var packet = PopPacket();
+            packet.create_packet((int)Defines.MinNetPacketType.SET_USER_VALUE);
+
+            packet.push(key);
+            packet.push(value);
+
+            packet.create_header();
+
+            Send(packet);
+        }
+
+        public static void GetUserValue(string key)
+        {
+            if (string.IsNullOrEmpty(key) || string.IsNullOrWhiteSpace(key))
+            {
+                Debug.LogError("빈 key값은 혀용 되지 않습니다.");
+                return;
+            }
+
+            var packet = PopPacket();
+            packet.create_packet((int)Defines.MinNetPacketType.GET_USER_VALUE);
+
+            packet.push(key);
+
+            packet.create_header();
+
             Send(packet);
         }
 
@@ -483,7 +583,17 @@ namespace MinNetforUnity
 
             obj.SetID(id);
             obj.prefabName = prefabName;
-            networkObjectDictionary.Add(id, obj);
+
+            MinNetView view = null;
+
+            if(networkObjectDictionary.TryGetValue(id, out view))
+            {// 이미 값이 있으면 동기화에 오류가 있는 것임
+                Debug.LogError("객체 동기화 오류 발생");
+            }
+            else
+            {
+                networkObjectDictionary.Add(id, obj);
+            }
         }
 
         public static void ObjectDestroy(MinNetPacket packet)
