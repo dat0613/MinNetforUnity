@@ -97,7 +97,6 @@ namespace MinNetforUnity
             foreach (var component in minnetComponents)
             {
                 component.objectId = objectId;
-                component.OnSetID(objectId);
             }
         }
 
@@ -593,6 +592,7 @@ namespace MinNetforUnity
             else
             {
                 networkObjectDictionary.Add(id, obj);
+                obj.OnSetID(id);
             }
         }
 
