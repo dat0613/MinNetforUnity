@@ -294,6 +294,10 @@ namespace MinNetforUnity
         {
             switch ((Defines.MinNetPacketType)packet.packet_type)
             {
+                case Defines.MinNetPacketType.PING:
+                    MinNetUser.AnswerPing();
+                    break;
+
                 case Defines.MinNetPacketType.USER_ENTER_ROOM:
                     UserEnterRoom(packet);
                     break;
@@ -813,7 +817,7 @@ namespace MinNetforUnity
             Send(packet);
         }
 
-        private static void AnswerPing()
+        public static void AnswerPing()
         {
             MinNetPacket pong = MinNetUser.PopPacket();
             pong.create_packet((int)Defines.MinNetPacketType.PONG);
@@ -973,11 +977,6 @@ namespace MinNetforUnity
         {
             switch ((Defines.MinNetPacketType)packet.packet_type)
             {
-                case Defines.MinNetPacketType.PING:
-                    AnswerPing();
-                    MinNetUser.PushPacket(packet);
-                    break;
-
                 case Defines.MinNetPacketType.PING_CAST:
                     Ping = packet.pop_int();
                     ServerTime = packet.pop_int() - (int)(Ping * 0.5f);
