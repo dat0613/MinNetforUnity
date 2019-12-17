@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Text;
 using System.Net.Sockets;
 using System.Net;
@@ -14,13 +13,13 @@ namespace MinNetforUnity
     using eventSet = Tuple<Socket, CallBack>;
     public delegate void CallBack(Exception e);
 
-    public enum MinNetRpcTarget { All = -1000, Others, AllViaServer, Server };
+    public enum MinNetRpcTarget { All = -1000, Others, AllViaServer, Server };// RPC 대상에 대한 옵션
 
     public class MonoBehaviourMinNetCallBack : MonoBehaviour
     {
         public virtual void UserEnterRoom(int roomNumber, string roomName)
         {
-
+            
         }
 
         public virtual void UserLeaveRoom()
@@ -39,7 +38,7 @@ namespace MinNetforUnity
         }
     };
 
-    public class RPCstorage
+    public class RPCstorage// 아직 서버로부터 id를 발급받지 않은 오브젝트가 RPC할때 잠시 버퍼에 저장해둔 후 id를 발급받은 후 서버에게 보냄
     {
         public RPCstorage(string componentName,string methodName, MinNetRpcTarget target, object[] parameters)
         {
@@ -128,6 +127,11 @@ namespace MinNetforUnity
         {
             MinNetUser.SendRPC(objectId, componentName, methodName, target, parameters);
         }
+
+        public void RPCudp(string componentName, string methodName, MinNetRpcTarget target, params object[] parameters)
+        {
+            MinNetUser.SendRPCudp(objectId, componentName, methodName, target, parameters);
+        }
     }
 
     public class MonoBehaviourMinNet : MonoBehaviour
@@ -169,6 +173,31 @@ namespace MinNetforUnity
             }
 
             minnetView.RPC(componentName, methodName, target, parameters);
+        }
+
+        public void RPCudp(string methodName, MinNetRpcTarget target, params object[] parameters)
+        {
+            if (componentName == "")
+                componentName = GetComponentName();
+
+            if (minnetView == null)
+            {
+                Debug.LogError("MonoBehaviourMinNet을 사용하려면 MinNetView 컴포넌트가 있어야 합니다.");
+                return;
+            }
+
+            if (minnetView.objectId < 0)
+            {// 아직 서버로 부터 id를 발급 받지 못한 오브젝트
+                minnetView.sendRPCq.Enqueue(new RPCstorage(componentName, methodName, target, parameters));
+                return;
+            }
+
+            if (target == MinNetRpcTarget.All)
+            {
+                GetType().GetMethod(methodName).Invoke(this, parameters);
+            }
+
+            minnetView.RPCudp(componentName, methodName, target, parameters);
         }
 
         public void RPC(string methodName, MinNetRpcTarget target)
@@ -274,9 +303,6 @@ namespace MinNetforUnity
                 return;
 
             // 새로운 씬을 로딩할 동안에는 잠시동안 패킷 핸들러를 멈추어야 함
-            //MinNetUser.StopSync = true;
-
-
 
             if (MinNetUser.loadSceneDelegate != null)
             {// 델리게이트가 있으면 비동기로 처리함
@@ -286,7 +312,6 @@ namespace MinNetforUnity
             {// 없으면 그냥 처리함
                 SceneManager.LoadScene(sceneName);
                 MinNetUser.LoadingComplete();
-                //MinNetUser.StopSync = false;
             }
         }
 
@@ -366,6 +391,8 @@ namespace MinNetforUnity
     public class Defines
     {
         public static readonly short HEADERSIZE = 2 + 4;// short로 몸체의 크기를 나타내고, int로 주고받을 패킷 타입 열거형을 나타냄
+        public static readonly short PACKETSIZE = 1024;
+
         public enum MinNetPacketType
         {
             OTHER_USER_ENTER_ROOM = -8200,
@@ -402,7 +429,12 @@ namespace MinNetforUnity
         public static Queue<MinNetPacket> packetQ = new Queue<MinNetPacket>();
         private static Queue<MinNetPacket> packetPool = new Queue<MinNetPacket>();
 
-        private static Socket socket = null;
+        private static IPEndPoint serverIpEndPoint = null;
+        private static EndPoint serverEndPoint = null;
+
+        private static Socket tcpSocket = null;
+        private static Socket udpSocket = null;
+
         private static int ping = 20;
         private static int serverTime = 0;// 서버가 시작된 후로 부터 흐른 시간 ms단위
         private static DateTime lastSyncTime = DateTime.Now;
@@ -424,7 +456,7 @@ namespace MinNetforUnity
             Send(packet);
         }
 
-        public static void SetUserValue(string key, int value)
+        public static void SetUserValue(string key, int value)// 서버에게 클라이언트의 임시 값 들을 보낼때
         {
             SetUserValue(key, value.ToString());
         }
@@ -464,7 +496,7 @@ namespace MinNetforUnity
             Send(packet);
         }
 
-        public static void GetUserValue(string key)
+        public static void GetUserValue(string key)// 서버에 저정된 임시 값 들을 받을때
         {
             if (string.IsNullOrEmpty(key) || string.IsNullOrWhiteSpace(key))
             {
@@ -482,7 +514,7 @@ namespace MinNetforUnity
             Send(packet);
         }
 
-        public static MinNetPacket PopPacket()
+        public static MinNetPacket PopPacket()// 오브젝트 풀 에서 패킷 하나를 빼옴
         {
             MinNetPacket retval = null;
 
@@ -492,7 +524,7 @@ namespace MinNetforUnity
                 {
                     retval = packetPool.Dequeue();
                 }
-                else
+                else// 풀에 남은 패킷이 없다면 새로 하나 만듦
                 {
                     retval = new MinNetPacket();
                 }
@@ -501,7 +533,7 @@ namespace MinNetforUnity
             return retval;
         }
 
-        public static void PushPacket(MinNetPacket packet)
+        public static void PushPacket(MinNetPacket packet)// 다 쓴 패킷을 다시 풀에 넣음
         {
             packet.Clear();
 
@@ -536,7 +568,7 @@ namespace MinNetforUnity
             }
         }
 
-        public static void OtherUserEnterRoom()
+        public static void OtherUserEnterRoom()// 다른 클라이언트가 룸에 들어왔을때 콜백
         {
             foreach (var obj in networkObjectDictionary)
             {
@@ -544,7 +576,7 @@ namespace MinNetforUnity
             }
         }
 
-        public static void OtherUserLeaveRoom()
+        public static void OtherUserLeaveRoom()// 다른 클라이언트가 룸에서 나갈때 콜백
         {
             foreach (var obj in networkObjectDictionary)
             {
@@ -552,18 +584,19 @@ namespace MinNetforUnity
             }
         }
 
-        public static void ObjectInstantiate(string prefabName, Vector3 position, Vector3 euler, int id)
+        public static void ObjectInstantiate(string prefabName, Vector3 position, Vector3 euler, int id)// 서버로 부터 객체 생성을 요청 받았을때
         {
             GameObject prefab = null;
             MinNetView obj = null;
-            Quaternion qu = new Quaternion();
+            Quaternion qu = Quaternion.identity;
+
             qu.eulerAngles = euler;
 
-            if (networkObjectCache.TryGetValue(prefabName, out prefab))
+            if (networkObjectCache.TryGetValue(prefabName, out prefab))// 프리팹 캐시에 프리팹이 이미 있으면 캐시에서 가저옴
             {
                 obj = GameObject.Instantiate(prefab, position, qu).GetComponent<MinNetView>();
             }
-            else
+            else// 캐시에 프리팹이 없으면 리소스에서 찾은 후 캐시에 넣음
             {
                 prefab = Resources.Load(prefabName) as GameObject;
 
@@ -578,7 +611,7 @@ namespace MinNetforUnity
                 obj = GameObject.Instantiate(prefab, position, qu).GetComponent<MinNetView>();
             }
 
-            if (obj == null)
+            if (obj == null)// MinNetView 컴포넌트를 갖지 않은 오브젝트는 네트워크 오브젝트로 사용할 수 없음
             {
                 Debug.LogError(prefabName + " 객체는 MinNetView 컴포넌트를 가지고 있지 않습니다.");
                 return;
@@ -589,7 +622,7 @@ namespace MinNetforUnity
 
             MinNetView view = null;
 
-            if(networkObjectDictionary.TryGetValue(id, out view))
+            if(networkObjectDictionary.TryGetValue(id, out view))// 이미 네트워크에 존재하는 오브젝트를 추가로 요청 받음
             {// 이미 값이 있으면 동기화에 오류가 있는 것임
                 Debug.LogError("객체 동기화 오류 발생");
             }
@@ -605,10 +638,10 @@ namespace MinNetforUnity
             ObjectDestroy(packet.pop_string(), packet.pop_int());
         }
 
-        private static void ObjectDestroy(string name, int id)
+        private static void ObjectDestroy(string name, int id)// 서버로 부터 객체 파괴를 요청 받았을 때
         {
             MinNetView obj = null;
-            if (networkObjectDictionary.TryGetValue(id, out obj))
+            if (networkObjectDictionary.TryGetValue(id, out obj))// 해당 객체가 있는지 확인 후
             {
                 if (string.Equals(obj.prefabName, name))
                 {
@@ -640,7 +673,7 @@ namespace MinNetforUnity
             }
         }
 
-        private static Type GetComponentType(string componentName)
+        private static Type GetComponentType(string componentName)// 컴포넌트 이름으로 타입 객체를 받는 함수
         {
             Type type = null;
             if(componentCache.TryGetValue(componentName, out type))
@@ -662,7 +695,7 @@ namespace MinNetforUnity
             return type;
         }
 
-        private static MethodBase GetMethod(Type componentType, string methodName)
+        private static MethodBase GetMethod(Type componentType, string methodName)// 타입 객체와 함수의 이름으로 함수 객체를 받는 함수
         {
             var methodMap = GetMethodMap(componentType);
             MethodBase methodBase = null;
@@ -683,7 +716,7 @@ namespace MinNetforUnity
             return methodBase;
         }
 
-        private static Dictionary<string, MethodBase> GetMethodMap(Type componentType)
+        private static Dictionary<string, MethodBase> GetMethodMap(Type componentType)// 함수 객체가 저장된 맵을 받는 함수
         {
             Dictionary<string, MethodBase> methodMap = null;
             if (methodCache.TryGetValue(componentType, out methodMap))
@@ -815,6 +848,27 @@ namespace MinNetforUnity
 
             packet.create_header();
             Send(packet);
+        }
+
+        public static void SendRPCudp(int id, string componentName, string methodName, MinNetRpcTarget target, params object[] parameters)
+        {
+            MinNetPacket packet = MinNetUser.PopPacket();
+            packet.create_packet((int)Defines.MinNetPacketType.RPC);
+            packet.push(id);
+            packet.push(componentName);
+            packet.push(methodName);
+            packet.push((int)target);
+
+            if (parameters != null)
+            {
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    packet.push(parameters.GetValue(i));
+                }
+            }
+
+            packet.create_header();
+            SendUdp(packet);
         }
 
         public static void AnswerPing()
@@ -1004,13 +1058,16 @@ namespace MinNetforUnity
                     handler.AddComponent<MinNetPacketHandler>();
                 }
 
-                IPEndPoint remoteEP = new IPEndPoint(IPAddress.Parse(ip), port);
+                serverIpEndPoint = serverIpEndPoint ?? new IPEndPoint(IPAddress.Parse(ip), port);
 
-                socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                serverEndPoint = serverEndPoint ?? new IPEndPoint(IPAddress.Parse(ip), port);
 
-                eventSet es = new eventSet(socket, callback);
+                tcpSocket = tcpSocket ?? new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                udpSocket = udpSocket ?? new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
 
-                socket.BeginConnect(remoteEP, new AsyncCallback(ConnectCallBack), es);
+                eventSet es = new eventSet(tcpSocket, callback);
+
+                tcpSocket.BeginConnect(serverIpEndPoint, new AsyncCallback(ConnectCallBack), es);
 
             }
             catch (Exception e)
@@ -1024,9 +1081,9 @@ namespace MinNetforUnity
         {
             try
             {
-                eventSet es = new eventSet(socket, callback);
+                eventSet es = new eventSet(tcpSocket, callback);
 
-                socket.BeginDisconnect(false, CloseCallBack, es);
+                tcpSocket.BeginDisconnect(false, CloseCallBack, es);
             }
             catch (Exception e)
             {
@@ -1041,7 +1098,7 @@ namespace MinNetforUnity
             {
                 MinNetPacket packet = MinNetUser.PopPacket();// 패킷을 생성
 
-                socket.BeginReceive
+                tcpSocket.BeginReceive
                 (
                     packet.buffer,// 패킷의 데이터가 들어갈 버퍼
                     0,// 처음부터 데이터를 담음
@@ -1058,11 +1115,34 @@ namespace MinNetforUnity
             }
         }
 
+        private static void StartRecvUdp()
+        {
+            try
+            {
+                MinNetPacket packet = MinNetUser.PopPacket();
+                udpSocket.BeginReceiveFrom
+                (
+                    packet.buffer,
+                    0,
+                    Defines.PACKETSIZE,
+                    SocketFlags.None,
+                    ref serverEndPoint,
+                    new AsyncCallback(RecvUdpCallBack),
+                    packet
+                );
+            }
+            catch (Exception e)
+            {
+                Debug.Log(e.Message);
+                DisconnectToServer();
+            }
+        }
+
         private static void StartRecvBody(MinNetPacket packet, int body_size)// 패킷의 몸체를 비동기로 받아오기 시작합니다.
         {
             try
             {
-                socket.BeginReceive
+                tcpSocket.BeginReceive
                 (
                     packet.buffer,
                     Defines.HEADERSIZE,// 헤더를 받은 후 몸체를 받아오기 때문에 헤더 데이터 이후에 몸체의 데이터가 들어옴
@@ -1085,7 +1165,7 @@ namespace MinNetforUnity
             {
                 MinNetPacket packet = (MinNetPacket)ar.AsyncState;
 
-                int byteRead = socket.EndReceive(ar);
+                int byteRead = tcpSocket.EndReceive(ar);
 
                 if (byteRead > 0)
                 {
@@ -1122,11 +1202,49 @@ namespace MinNetforUnity
             }
         }
 
+        private static void RecvUdpCallBack(IAsyncResult ar)
+        {
+            try
+            {
+                MinNetPacket packet = (MinNetPacket)ar.AsyncState;
+
+                int byteRead = udpSocket.EndReceiveFrom(ar, ref serverEndPoint);
+
+                if (byteRead > 0)
+                {
+                    packet.position = 0;
+                    var body_size = packet.pop_short();
+                    var packet_type = packet.pop_int();
+
+                    if (body_size > Defines.PACKETSIZE - Defines.HEADERSIZE || body_size < 0)
+                    {
+                        PushPacket(packet);
+                    }
+                    else
+                    {
+                        packet.packet_type = packet_type;
+                        PacketHandler(packet);
+                        StartRecvUdp();
+                    }
+                }
+                else
+                {
+                    DisconnectToServer();
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.Log(e.ToString());
+                DisconnectToServer();
+            }
+
+        }
+
         private static void Send(MinNetPacket packet)
         {
             try
             {
-                socket.BeginSend
+                tcpSocket.BeginSend
                 (
                     packet.buffer,
                     0,
@@ -1147,7 +1265,44 @@ namespace MinNetforUnity
         {
             try
             {
-                socket.EndSend(ar);
+                tcpSocket.EndSend(ar);
+                var packet = (MinNetPacket)ar.AsyncState;
+                MinNetUser.PushPacket(packet);
+            }
+            catch (Exception e)
+            {
+                Debug.Log(e.Message);
+                DisconnectToServer();
+            }
+        }
+
+        private static void SendUdp(MinNetPacket packet)
+        {
+            try
+            {
+                udpSocket.BeginSendTo
+                (
+                    packet.buffer,
+                    0,
+                    packet.position,
+                    SocketFlags.None,
+                    serverEndPoint,
+                    new AsyncCallback(SendUdpCallBack),
+                    packet
+                );
+            }
+            catch (Exception e)
+            {
+                Debug.Log(e);
+                DisconnectToServer();
+            }
+        }
+
+        private static void SendUdpCallBack(IAsyncResult ar)
+        {
+            try
+            {
+                udpSocket.EndSendTo(ar);
                 var packet = (MinNetPacket)ar.AsyncState;
                 MinNetUser.PushPacket(packet);
             }
@@ -1168,6 +1323,7 @@ namespace MinNetforUnity
                 es.Item2?.Invoke(null);
 
                 StartRecvHead();
+                StartRecvUdp();
             }
             catch (Exception e)
             {
@@ -1181,7 +1337,7 @@ namespace MinNetforUnity
             eventSet es = (eventSet)ar.AsyncState;
             try
             {
-                socket.EndDisconnect(ar);
+                tcpSocket.EndDisconnect(ar);
                 es.Item2?.Invoke(null);
                 Debug.Log("연결 끊음");
             }
@@ -1208,7 +1364,7 @@ namespace MinNetforUnity
 
         public MinNetPacket()
         {
-            this.buffer = new byte[1024];               //패킷의 최대 크기 = 1024 byte
+            this.buffer = new byte[Defines.PACKETSIZE];               //패킷의 최대 크기 = 1024 byte
             position = 0;
         }
 
