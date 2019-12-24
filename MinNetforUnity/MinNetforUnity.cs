@@ -11,9 +11,11 @@ using UnityEngine.SceneManagement;
 namespace MinNetforUnity
 {
     using eventSet = Tuple<Socket, CallBack>;
+    using UDPCallBackObject = Tuple<MinNetPacket, EndPoint>;
+
     public delegate void CallBack(Exception e);
 
-    public enum MinNetRpcTarget { All = -1000, Others, AllViaServer, Server };// RPC 대상에 대한 옵션
+    public enum MinNetRpcTarget { All = -1000, Others, AllViaServer, Server, P2Pgroup };// RPC 대상에 대한 옵션
 
     public class MonoBehaviourMinNetCallBack : MonoBehaviour
     {
@@ -123,14 +125,9 @@ namespace MinNetforUnity
             }
         }
 
-        public void RPC(string componentName, string methodName, MinNetRpcTarget target, params object[] parameters)
+        public void RPC(string componentName, string methodName, MinNetRpcTarget target, bool isTcp, params object[] parameters)
         {
-            MinNetUser.SendRPC(objectId, componentName, methodName, target, parameters);
-        }
-
-        public void RPCudp(string componentName, string methodName, MinNetRpcTarget target, params object[] parameters)
-        {
-            MinNetUser.SendRPCudp(objectId, componentName, methodName, target, parameters);
+            MinNetUser.SendRPC(objectId, componentName, methodName, target, isTcp, parameters);
         }
     }
 
@@ -152,6 +149,12 @@ namespace MinNetforUnity
 
         public void RPC(string methodName, MinNetRpcTarget target, params object[] parameters)
         {
+            if(target == MinNetRpcTarget.P2Pgroup)
+            {
+                Debug.LogError("target이 P2Pgroup인 RPC는 RPCudp함수 에서만 가능합니다.");
+                return;
+            }
+
             if (componentName == "")
                 componentName = GetComponentName();
 
@@ -172,7 +175,7 @@ namespace MinNetforUnity
                 GetType().GetMethod(methodName).Invoke(this, parameters);
             }
 
-            minnetView.RPC(componentName, methodName, target, parameters);
+            minnetView.RPC(componentName, methodName, target, true, parameters);
         }
 
         public void RPCudp(string methodName, MinNetRpcTarget target, params object[] parameters)
@@ -197,7 +200,7 @@ namespace MinNetforUnity
                 GetType().GetMethod(methodName).Invoke(this, parameters);
             }
 
-            minnetView.RPCudp(componentName, methodName, target, parameters);
+            minnetView.RPC(componentName, methodName, target, false, parameters);
         }
 
         public void RPC(string methodName, MinNetRpcTarget target)
@@ -411,7 +414,13 @@ namespace MinNetforUnity
             USER_ENTER_ROOM_FAIL,
             CHANGE_SCENE_COMPLETE,
             SET_USER_VALUE,
-            GET_USER_VALUE
+            GET_USER_VALUE,
+            IP_CAST,
+            OTHER_JOIN_P2P_GROUP,
+            OTHER_LEAVE_P2P_GROUP,
+            JOIN_P2P_GROUP,
+            LEAVE_P2P_GROUP,
+            P2P_MEMBER_CAST
         };
     }
 
@@ -426,8 +435,14 @@ namespace MinNetforUnity
         private static Dictionary<Type, Dictionary<string, MethodBase>> methodCache = new Dictionary<Type, Dictionary<string, MethodBase>>();// 한번 찾은 함수도 미리 저장해 둠, 첫 키값은 컴포넌트의 이름, 다음 키값은 함수의 이름
         private static Dictionary<MethodBase, Tuple<ParameterInfo[], object[]>> parameterCache = new Dictionary<MethodBase, Tuple<ParameterInfo[], object[]>>();// 함수의 파라미터 타입과 파라미터를 넣을때 사용할 배열을 미리 저장해 두어 new를 최소화 함
 
+        private static List<IPEndPoint> p2pMemberList = new List<IPEndPoint>();
+        private static Dictionary<int, IPEndPoint> p2pMemberMap = new Dictionary<int, IPEndPoint>();
+
+        private static IPEndPoint remoteEndpoint = null;
+
         public static Queue<MinNetPacket> packetQ = new Queue<MinNetPacket>();
         private static Queue<MinNetPacket> packetPool = new Queue<MinNetPacket>();
+        private static Queue<UDPCallBackObject> callbackObjectPool = new Queue<UDPCallBackObject>();
 
         private static IPEndPoint serverIpEndPoint = null;
         private static EndPoint serverEndPoint = null;
@@ -542,6 +557,37 @@ namespace MinNetforUnity
                 packetPool.Enqueue(packet);
             }
         }
+
+        //public static UDPCallBackObject PopCallbackObject()// 오브젝트 풀 에서 패킷 하나를 빼옴
+        //{
+        //    UDPCallBackObject retval = null;
+
+        //    lock (packetPool)
+        //    {
+        //        if (packetPool.Count > 0)
+        //        {
+        //            retval = packetPool.Dequeue();
+        //        }
+        //        else// 풀에 남은 패킷이 없다면 새로 하나 만듦
+        //        {
+        //            retval = new MinNetPacket();
+        //        }
+        //    }
+
+        //    return retval;
+        //}
+
+        //public static void PushPacket(UDPCallBackObject callBackObject)// 다 쓴 패킷을 다시 풀에 넣음
+        //{
+        //    callBackObject.
+
+        //    packet.Clear();
+
+        //    lock (packetPool)
+        //    {
+        //        packetPool.Enqueue(packet);
+        //    }
+        //}
 
         public static int Ping
         {
@@ -829,7 +875,7 @@ namespace MinNetforUnity
             Send(packet);
         }
 
-        public static void SendRPC(int id, string componentName, string methodName, MinNetRpcTarget target, params object[] parameters)
+        public static void SendRPC(int id, string componentName, string methodName, MinNetRpcTarget target, bool isTcp, params object[] parameters)
         {
             MinNetPacket packet = MinNetUser.PopPacket();
             packet.create_packet((int)Defines.MinNetPacketType.RPC);
@@ -847,28 +893,35 @@ namespace MinNetforUnity
             }
 
             packet.create_header();
-            Send(packet);
-        }
 
-        public static void SendRPCudp(int id, string componentName, string methodName, MinNetRpcTarget target, params object[] parameters)
-        {
-            MinNetPacket packet = MinNetUser.PopPacket();
-            packet.create_packet((int)Defines.MinNetPacketType.RPC);
-            packet.push(id);
-            packet.push(componentName);
-            packet.push(methodName);
-            packet.push((int)target);
-
-            if (parameters != null)
+            if (isTcp)
+                Send(packet);
+            else
             {
-                for (int i = 0; i < parameters.Length; i++)
+                if(target == MinNetRpcTarget.P2Pgroup)
                 {
-                    packet.push(parameters.GetValue(i));
-                }
-            }
+                    Debug.Log("P2Pgroup Count : " + p2pMemberList.Count.ToString());
 
-            packet.create_header();
-            SendUdp(packet);
+                    foreach(var endPoint in p2pMemberList)
+                    {
+                        var end = (IPEndPoint)endPoint;
+                        Debug.Log("p2p IP : " + end.Address.ToString() + ", port : " + end.Port.ToString());
+                        MinNetPacket p2pPacket = MinNetUser.PopPacket();
+
+                        p2pPacket.create_packet((int)Defines.MinNetPacketType.RPC);
+                        packet.buffer.CopyTo(p2pPacket.buffer, 0);
+                        p2pPacket.position = packet.position;
+
+                        p2pPacket.create_header();
+
+                        SendUdp(p2pPacket, endPoint);
+                    }
+
+                    PushPacket(packet);
+                }
+                else
+                    SendUdp(packet, serverEndPoint);
+            }
         }
 
         public static void AnswerPing()
@@ -897,7 +950,7 @@ namespace MinNetforUnity
                     while(obj.sendRPCq.Count > 0)
                     {
                         RPCstorage storage = obj.sendRPCq.Dequeue();
-                        obj.RPC(storage.componentName, storage.methodName, storage.target, storage.parameters);
+                        obj.RPC(storage.componentName, storage.methodName, storage.target, true, storage.parameters);
                     }
                 }
                 else
@@ -1027,13 +1080,101 @@ namespace MinNetforUnity
             Send(packet);
         }
 
+        private static void SetRemoteAddress(MinNetPacket packet)
+        {
+            var ip = packet.pop_string();
+            var port = packet.pop_int();
+
+            Debug.Log("RemoteIP : " + ip + " : " + port.ToString());
+
+            if (remoteEndpoint == null)
+            {
+                remoteEndpoint = new IPEndPoint(IPAddress.Parse(ip), port);
+            }
+            else
+            {
+                remoteEndpoint.Address = IPAddress.Parse(ip);
+                remoteEndpoint.Port = port;
+            }
+        }
+
+        private static void Addp2pMember(MinNetPacket packet)
+        {
+            IPEndPoint endPoint = null;
+
+            var id = packet.pop_int();
+            var ip = packet.pop_string();
+            var port = packet.pop_int();
+
+            Debug.Log(id.ToString() + " : " + ip + " : " + port.ToString());
+
+            if(p2pMemberMap.TryGetValue(id, out endPoint))
+            {// 이미 값이 있음
+                endPoint.Address = IPAddress.Parse(ip);
+                endPoint.Port = port;
+            }
+            else
+            {// 아직 값이 없음
+                endPoint = new IPEndPoint(IPAddress.Parse(ip), port);
+                p2pMemberMap.Add(id, endPoint);
+                p2pMemberList.Add(endPoint);
+            }
+
+            StartRecvUdp(endPoint);
+        }
+
+        private static void Delp2pMember(MinNetPacket packet)
+        {
+            var id = packet.pop_int();
+
+            IPEndPoint endPoint;
+
+            if (p2pMemberMap.TryGetValue(id, out endPoint))
+            {// 이미 값이 있음
+                p2pMemberMap.Remove(id);
+                p2pMemberList.Remove(endPoint);
+            }
+        }
+
+        private static void Clearp2pMember()
+        {
+            p2pMemberList.Clear();
+            p2pMemberMap.Clear();
+        }
+
         private static void PacketHandler(MinNetPacket packet)
         {
+            Defines.MinNetPacketType packetType = (Defines.MinNetPacketType)packet.packet_type;
             switch ((Defines.MinNetPacketType)packet.packet_type)
             {
                 case Defines.MinNetPacketType.PING_CAST:
                     Ping = packet.pop_int();
                     ServerTime = packet.pop_int() - (int)(Ping * 0.5f);
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.IP_CAST:
+                    SetRemoteAddress(packet);
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.OTHER_JOIN_P2P_GROUP:// 누군가가 p2p 그룹에 들어옴
+                case Defines.MinNetPacketType.P2P_MEMBER_CAST:// 기존 p2p 그룹에 있는 정보를 받음
+                    Addp2pMember(packet);
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.OTHER_LEAVE_P2P_GROUP:// 누군가가 p2p 그룹에서 나감
+                    Delp2pMember(packet);
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.JOIN_P2P_GROUP:// 내가 p2p 그룹에 들어감
+                    
+                    break;
+
+                case Defines.MinNetPacketType.LEAVE_P2P_GROUP:// 내가 p2p 그룹을 나감
+                    Clearp2pMember();
                     MinNetUser.PushPacket(packet);
                     break;
 
@@ -1115,20 +1256,21 @@ namespace MinNetforUnity
             }
         }
 
-        private static void StartRecvUdp()
+        private static void StartRecvUdp(EndPoint endPoint)
         {
             try
             {
                 MinNetPacket packet = MinNetUser.PopPacket();
+                var callbackObject = new UDPCallBackObject(packet, endPoint);
                 udpSocket.BeginReceiveFrom
                 (
                     packet.buffer,
                     0,
                     Defines.PACKETSIZE,
                     SocketFlags.None,
-                    ref serverEndPoint,
+                    ref endPoint,
                     new AsyncCallback(RecvUdpCallBack),
-                    packet
+                    callbackObject
                 );
             }
             catch (Exception e)
@@ -1141,7 +1283,7 @@ namespace MinNetforUnity
         private static void StartRecvBody(MinNetPacket packet, int body_size)// 패킷의 몸체를 비동기로 받아오기 시작합니다.
         {
             try
-            {
+            { 
                 tcpSocket.BeginReceive
                 (
                     packet.buffer,
@@ -1204,9 +1346,14 @@ namespace MinNetforUnity
 
         private static void RecvUdpCallBack(IAsyncResult ar)
         {
+            UDPCallBackObject callbackObject = null;
+            MinNetPacket packet = null;
+            EndPoint endPoint = null;
             try
             {
-                MinNetPacket packet = (MinNetPacket)ar.AsyncState;
+                callbackObject = (UDPCallBackObject)ar.AsyncState;
+                packet = callbackObject.Item1;
+                endPoint = callbackObject.Item2;
 
                 int byteRead = udpSocket.EndReceiveFrom(ar, ref serverEndPoint);
 
@@ -1224,20 +1371,23 @@ namespace MinNetforUnity
                     {
                         packet.packet_type = packet_type;
                         PacketHandler(packet);
-                        StartRecvUdp();
+                        StartRecvUdp(endPoint);
                     }
                 }
                 else
                 {
-                    DisconnectToServer();
+                    if(endPoint == serverEndPoint)
+                        DisconnectToServer();
                 }
             }
             catch (Exception e)
             {
                 Debug.Log(e.ToString());
-                DisconnectToServer();
+                if (endPoint == serverEndPoint)
+                {
+                    DisconnectToServer();
+                }
             }
-
         }
 
         private static void Send(MinNetPacket packet)
@@ -1276,8 +1426,9 @@ namespace MinNetforUnity
             }
         }
 
-        private static void SendUdp(MinNetPacket packet)
+        private static void SendUdp(MinNetPacket packet, EndPoint endPoint)
         {
+            var callbackObject = new UDPCallBackObject(packet, endPoint);
             try
             {
                 udpSocket.BeginSendTo
@@ -1288,7 +1439,7 @@ namespace MinNetforUnity
                     SocketFlags.None,
                     serverEndPoint,
                     new AsyncCallback(SendUdpCallBack),
-                    packet
+                    callbackObject
                 );
             }
             catch (Exception e)
@@ -1300,16 +1451,26 @@ namespace MinNetforUnity
 
         private static void SendUdpCallBack(IAsyncResult ar)
         {
+            UDPCallBackObject callbackObject = null;
+            MinNetPacket packet = null;
+            EndPoint endPoint = null;
+
             try
             {
+                callbackObject = (UDPCallBackObject)ar.AsyncState;
+                packet = callbackObject.Item1;
+                endPoint = callbackObject.Item2;
+
                 udpSocket.EndSendTo(ar);
-                var packet = (MinNetPacket)ar.AsyncState;
                 MinNetUser.PushPacket(packet);
             }
             catch (Exception e)
             {
                 Debug.Log(e.Message);
-                DisconnectToServer();
+                if(endPoint == serverEndPoint)
+                {
+                    DisconnectToServer();
+                }
             }
         }
 
@@ -1323,7 +1484,7 @@ namespace MinNetforUnity
                 es.Item2?.Invoke(null);
 
                 StartRecvHead();
-                StartRecvUdp();
+                StartRecvUdp(serverEndPoint);
             }
             catch (Exception e)
             {
