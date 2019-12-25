@@ -15,7 +15,7 @@ namespace MinNetforUnity
 
     public delegate void CallBack(Exception e);
 
-    public enum MinNetRpcTarget { All = -1000, Others, AllViaServer, Server, P2Pgroup };// RPC 대상에 대한 옵션
+    public enum MinNetRpcTarget { All = -1000, Others, AllViaServer, Server/*, P2Pgroup*/ };// RPC 대상에 대한 옵션
 
     public class MonoBehaviourMinNetCallBack : MonoBehaviour
     {
@@ -149,11 +149,11 @@ namespace MinNetforUnity
 
         public void RPC(string methodName, MinNetRpcTarget target, params object[] parameters)
         {
-            if(target == MinNetRpcTarget.P2Pgroup)
-            {
-                Debug.LogError("target이 P2Pgroup인 RPC는 RPCudp함수 에서만 가능합니다.");
-                return;
-            }
+            //if(target == MinNetRpcTarget.P2Pgroup)
+            //{
+            //    Debug.LogError("target이 P2Pgroup인 RPC는 RPCudp함수 에서만 가능합니다.");
+            //    return;
+            //}
 
             if (componentName == "")
                 componentName = GetComponentName();
@@ -440,12 +440,20 @@ namespace MinNetforUnity
 
         private static IPEndPoint remoteEndpoint = null;
 
+        public static IPEndPoint RemoteEndpoint
+        {
+            get
+            {
+                return remoteEndpoint;
+            }
+        }
+
         public static Queue<MinNetPacket> packetQ = new Queue<MinNetPacket>();
         private static Queue<MinNetPacket> packetPool = new Queue<MinNetPacket>();
         private static Queue<UDPCallBackObject> callbackObjectPool = new Queue<UDPCallBackObject>();
 
-        private static IPEndPoint serverIpEndPoint = null;
-        private static EndPoint serverEndPoint = null;
+        private static EndPoint tcpServerEndPoint = null;
+        private static EndPoint udpServerEndpoint = null;
 
         private static Socket tcpSocket = null;
         private static Socket udpSocket = null;
@@ -455,8 +463,6 @@ namespace MinNetforUnity
         private static DateTime lastSyncTime = DateTime.Now;
 
         public static LoadSceneDelegate loadSceneDelegate = null;
-
-        public static bool StopSync = false;
 
         public static void ClearNetworkObjectDictionary()
         {
@@ -897,31 +903,31 @@ namespace MinNetforUnity
             if (isTcp)
                 Send(packet);
             else
-            {
-                if(target == MinNetRpcTarget.P2Pgroup)
-                {
-                    Debug.Log("P2Pgroup Count : " + p2pMemberList.Count.ToString());
+            //{
+            //    if(target == MinNetRpcTarget.P2Pgroup)
+            //    {
+            //        Debug.Log("P2Pgroup Count : " + p2pMemberList.Count.ToString());
 
-                    foreach(var endPoint in p2pMemberList)
-                    {
-                        var end = (IPEndPoint)endPoint;
-                        Debug.Log("p2p IP : " + end.Address.ToString() + ", port : " + end.Port.ToString());
-                        MinNetPacket p2pPacket = MinNetUser.PopPacket();
+            //        foreach(var endPoint in p2pMemberList)
+            //        {
+            //            var end = (IPEndPoint)endPoint;
+            //            Debug.Log("p2p IP : " + end.Address.ToString() + ", port : " + end.Port.ToString());
+            //            MinNetPacket p2pPacket = MinNetUser.PopPacket();
 
-                        p2pPacket.create_packet((int)Defines.MinNetPacketType.RPC);
-                        packet.buffer.CopyTo(p2pPacket.buffer, 0);
-                        p2pPacket.position = packet.position;
+            //            p2pPacket.create_packet((int)Defines.MinNetPacketType.RPC);
+            //            packet.buffer.CopyTo(p2pPacket.buffer, 0);
+            //            p2pPacket.position = packet.position;
 
-                        p2pPacket.create_header();
+            //            p2pPacket.create_header();
 
-                        SendUdp(p2pPacket, endPoint);
-                    }
+            //            SendUdp(p2pPacket, endPoint);
+            //        }
 
-                    PushPacket(packet);
-                }
-                else
-                    SendUdp(packet, serverEndPoint);
-            }
+            //        PushPacket(packet);
+            //    }
+            //    else
+                    SendUdp(packet, udpServerEndpoint);
+            //}
         }
 
         public static void AnswerPing()
@@ -1187,7 +1193,7 @@ namespace MinNetforUnity
             }
         }
 
-        public static void ConnectToServer(string ip, int port, CallBack callback = null)
+        public static void ConnectToServer(string ip, ushort tcpPort, ushort udpPort, CallBack callback = null)
         {
             try
             {
@@ -1199,16 +1205,15 @@ namespace MinNetforUnity
                     handler.AddComponent<MinNetPacketHandler>();
                 }
 
-                serverIpEndPoint = serverIpEndPoint ?? new IPEndPoint(IPAddress.Parse(ip), port);
-
-                serverEndPoint = serverEndPoint ?? new IPEndPoint(IPAddress.Parse(ip), port);
+                tcpServerEndPoint = tcpServerEndPoint ?? new IPEndPoint(IPAddress.Parse(ip), tcpPort);
+                udpServerEndpoint = udpServerEndpoint ?? new IPEndPoint(IPAddress.Parse(ip), udpPort);
 
                 tcpSocket = tcpSocket ?? new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                 udpSocket = udpSocket ?? new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
 
                 eventSet es = new eventSet(tcpSocket, callback);
 
-                tcpSocket.BeginConnect(serverIpEndPoint, new AsyncCallback(ConnectCallBack), es);
+                tcpSocket.BeginConnect(tcpServerEndPoint, new AsyncCallback(ConnectCallBack), es);
 
             }
             catch (Exception e)
@@ -1355,7 +1360,7 @@ namespace MinNetforUnity
                 packet = callbackObject.Item1;
                 endPoint = callbackObject.Item2;
 
-                int byteRead = udpSocket.EndReceiveFrom(ar, ref serverEndPoint);
+                int byteRead = udpSocket.EndReceiveFrom(ar, ref endPoint);
 
                 if (byteRead > 0)
                 {
@@ -1374,16 +1379,11 @@ namespace MinNetforUnity
                         StartRecvUdp(endPoint);
                     }
                 }
-                else
-                {
-                    if(endPoint == serverEndPoint)
-                        DisconnectToServer();
-                }
             }
             catch (Exception e)
             {
                 Debug.Log(e.ToString());
-                if (endPoint == serverEndPoint)
+                if (endPoint == udpServerEndpoint)
                 {
                     DisconnectToServer();
                 }
@@ -1428,6 +1428,9 @@ namespace MinNetforUnity
 
         private static void SendUdp(MinNetPacket packet, EndPoint endPoint)
         {
+            var ipEndPoint = (IPEndPoint)endPoint;
+            Debug.Log(ipEndPoint.Address.ToString() + " : " + ipEndPoint.Port.ToString());
+
             var callbackObject = new UDPCallBackObject(packet, endPoint);
             try
             {
@@ -1437,7 +1440,7 @@ namespace MinNetforUnity
                     0,
                     packet.position,
                     SocketFlags.None,
-                    serverEndPoint,
+                    endPoint,
                     new AsyncCallback(SendUdpCallBack),
                     callbackObject
                 );
@@ -1467,7 +1470,7 @@ namespace MinNetforUnity
             catch (Exception e)
             {
                 Debug.Log(e.Message);
-                if(endPoint == serverEndPoint)
+                if(endPoint == udpServerEndpoint)
                 {
                     DisconnectToServer();
                 }
@@ -1484,7 +1487,7 @@ namespace MinNetforUnity
                 es.Item2?.Invoke(null);
 
                 StartRecvHead();
-                StartRecvUdp(serverEndPoint);
+                StartRecvUdp(udpServerEndpoint);
             }
             catch (Exception e)
             {
