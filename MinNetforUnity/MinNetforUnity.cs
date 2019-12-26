@@ -7,6 +7,8 @@ using UnityEngine;
 using System.Reflection;
 using System.Collections;
 using UnityEngine.SceneManagement;
+using System.Threading;
+
 
 namespace MinNetforUnity
 {
@@ -438,6 +440,7 @@ namespace MinNetforUnity
         private static Queue<MinNetView> waitIdObject = new Queue<MinNetView>();// 서버로 부터 id부여를 기다리는 객체들이 임시적으로 있을 곳
         private static Dictionary<int, MinNetView> networkObjectDictionary = new Dictionary<int, MinNetView>();// 서버와 동기화 되는 객체들을 모아두는 곳
         private static Dictionary<string, GameObject> networkObjectCache = new Dictionary<string, GameObject>();// 각종 객체들의 캐시
+        private static Timer sendUDPtimer = new Timer(new TimerCallback(sendUDPtimerCallBack));
 
         private static Dictionary<string, Type> componentCache = new Dictionary<string, Type>();// 리플렉션사용의 최소화를 위해 한번 찾아낸 컴포넌트는 미리 저장해둠
         private static Dictionary<Type, Dictionary<string, MethodBase>> methodCache = new Dictionary<Type, Dictionary<string, MethodBase>>();// 한번 찾은 함수도 미리 저장해 둠, 첫 키값은 컴포넌트의 이름, 다음 키값은 함수의 이름
@@ -453,6 +456,16 @@ namespace MinNetforUnity
             get
             {
                 return remoteEndpoint;
+            }
+        }
+
+        private static bool serverKnowThisIP = false;
+
+        public static bool ServerKnowThisIP
+        {
+            get
+            {
+                return serverKnowThisIP;
             }
         }
 
@@ -473,6 +486,19 @@ namespace MinNetforUnity
         private static DateTime lastSyncTime = DateTime.Now;
 
         public static LoadSceneDelegate loadSceneDelegate = null;
+
+        private static void sendUDPtimerCallBack(System.Object state)
+        {
+            if(!serverKnowThisIP)
+            {
+                Debug.Log("서버에게 udp ip를 다시 알려줌");
+                SendUdpFirst();
+            }
+            else
+            {
+                Debug.Log("서버에게 udp ip를 알려주는데 성공함");
+            }
+        }
 
         public static void ClearNetworkObjectDictionary()
         {
@@ -1126,6 +1152,9 @@ namespace MinNetforUnity
             packet.push(userID);
             packet.create_header();
             SendUdp(packet, udpServerEndpoint);
+
+            sendUDPtimer.Change(1000, System.Threading.Timeout.Infinite);
+            Debug.Log("서버에게 udp ip를 알려줌");
         }
 
         private static void RecvACK()
@@ -1205,7 +1234,7 @@ namespace MinNetforUnity
                     break;
 
                 case Defines.MinNetPacketType.SEND_UDP_FIRST_ACK:
-                    Debug.Log("완료");
+                    serverKnowThisIP = true;
                     MinNetUser.PushPacket(packet);
                     break;
 
@@ -1252,6 +1281,8 @@ namespace MinNetforUnity
 
                 tcpServerEndPoint = tcpServerEndPoint ?? new IPEndPoint(IPAddress.Parse(ip), tcpPort);
                 udpServerEndpoint = udpServerEndpoint ?? new IPEndPoint(IPAddress.Parse(ip), udpPort);
+
+                serverKnowThisIP = false;
 
                 tcpSocket = tcpSocket ?? new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                 udpSocket = udpSocket ?? new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
