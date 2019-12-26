@@ -127,6 +127,11 @@ namespace MinNetforUnity
 
         public void RPC(string componentName, string methodName, MinNetRpcTarget target, bool isTcp, params object[] parameters)
         {
+            if (!isMine)
+            {
+                Debug.LogError("isMine이 false인 객체의 RPC는 허용되지 않습니다.");
+                return;
+            }
             MinNetUser.SendRPC(objectId, componentName, methodName, target, isTcp, parameters);
         }
     }
@@ -408,6 +413,7 @@ namespace MinNetforUnity
             PONG,
             PING_CAST,
             RPC,
+            USER_ID_CAST,
             ID_CAST,
             CREATE_ROOM,
             CHANGE_SCENE,
@@ -420,7 +426,9 @@ namespace MinNetforUnity
             OTHER_LEAVE_P2P_GROUP,
             JOIN_P2P_GROUP,
             LEAVE_P2P_GROUP,
-            P2P_MEMBER_CAST
+            P2P_MEMBER_CAST,
+            SEND_UDP_FIRST,
+            SEND_UDP_FIRST_ACK,
         };
     }
 
@@ -447,6 +455,8 @@ namespace MinNetforUnity
                 return remoteEndpoint;
             }
         }
+
+        private static int userID = -1;
 
         public static Queue<MinNetPacket> packetQ = new Queue<MinNetPacket>();
         private static Queue<MinNetPacket> packetPool = new Queue<MinNetPacket>();
@@ -1104,6 +1114,25 @@ namespace MinNetforUnity
             }
         }
 
+        private static void SetUserID(MinNetPacket packet)
+        {
+            userID = packet.pop_int();
+        }
+
+        private static void SendUdpFirst()
+        {
+            var packet = PopPacket();
+            packet.create_packet((int)Defines.MinNetPacketType.SEND_UDP_FIRST);
+            packet.push(userID);
+            packet.create_header();
+            SendUdp(packet, udpServerEndpoint);
+        }
+
+        private static void RecvACK()
+        {
+
+        }
+
         private static void Addp2pMember(MinNetPacket packet)
         {
             IPEndPoint endPoint = null;
@@ -1159,8 +1188,24 @@ namespace MinNetforUnity
                     MinNetUser.PushPacket(packet);
                     break;
 
+
                 case Defines.MinNetPacketType.IP_CAST:
                     SetRemoteAddress(packet);
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.SEND_UDP_FIRST:
+                    SendUdpFirst();
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.USER_ID_CAST:
+                    SetUserID(packet);
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.SEND_UDP_FIRST_ACK:
+                    Debug.Log("완료");
                     MinNetUser.PushPacket(packet);
                     break;
 
