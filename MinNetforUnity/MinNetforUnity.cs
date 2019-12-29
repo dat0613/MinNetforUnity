@@ -143,6 +143,69 @@ namespace MinNetforUnity
 
     }
 
+    public class MinNetPeer
+    {
+        public MinNetPeer(string ipAddress, int port, int ID)
+        {
+            id = ID;
+            endPoint = new IPEndPoint(IPAddress.Parse(ipAddress), port);
+            holePunchTestTimer = new Timer(new TimerCallback(HolePunchTestCallBack));
+        }
+
+        public MinNetPeer(IPEndPoint ipEndPoint, int ID)
+        {
+            id = ID;
+            endPoint = ipEndPoint;
+            holePunchTestTimer = new Timer(new TimerCallback(HolePunchTestCallBack));
+        }
+
+        public void HolePunchTestStart()
+        {
+            if (holePunchTestCount >= maxHolePunchTestCount)// 테스트 패킷이 일정 횟수 이상 답이 없으면 해당 피어로 부터의 홀펀칭이 실패한 것임
+                return;
+
+            holePunchTestCount++;
+            holePunchTestTimer.Change(3000, System.Threading.Timeout.Infinite);
+        }
+
+        private void HolePunchTestCallBack(System.Object state)
+        {
+            if (!isCanP2P)
+                HolePunchTestStart();
+        }
+
+        private static Timer holePunchTestTimer = null;
+
+        private int holePunchTestCount = 0;// p2p 응답 확인 패킷을 보낸 횟수
+        private int maxHolePunchTestCount = 3;// p2p 응답 확인 패킷을 보낼 최대 횟수
+
+        public IPEndPoint endPoint;
+
+        private int id = -1;
+        public int ID
+        {
+            get
+            {
+                return id;
+            }
+        }
+
+        private bool isCanP2P = false;// 이 값이 true면 바로 해당 피어 에게 패킷을 보냄, false면 릴레이 서버를 통해 패킷을 보냄
+        public bool IsCanP2P
+        {
+            get
+            {
+                return isCanP2P;
+            }
+
+            set
+            {
+                isCanP2P = value;
+            }
+        }
+    }
+
+
     public class MonoBehaviourMinNet : MonoBehaviour
     {
         [HideInInspector]
@@ -436,6 +499,8 @@ namespace MinNetforUnity
             P2P_MEMBER_CAST,
             SEND_UDP_FIRST,
             SEND_UDP_FIRST_ACK,
+            IS_CAN_P2P,
+            IS_CAN_P2P_ACK,
         };
     }
 
@@ -451,10 +516,27 @@ namespace MinNetforUnity
         private static Dictionary<Type, Dictionary<string, MethodBase>> methodCache = new Dictionary<Type, Dictionary<string, MethodBase>>();// 한번 찾은 함수도 미리 저장해 둠, 첫 키값은 컴포넌트의 이름, 다음 키값은 함수의 이름
         private static Dictionary<MethodBase, Tuple<ParameterInfo[], object[]>> parameterCache = new Dictionary<MethodBase, Tuple<ParameterInfo[], object[]>>();// 함수의 파라미터 타입과 파라미터를 넣을때 사용할 배열을 미리 저장해 두어 new를 최소화 함
 
-        private static List<IPEndPoint> p2pMemberList = new List<IPEndPoint>();
-        private static Dictionary<int, IPEndPoint> p2pMemberMap = new Dictionary<int, IPEndPoint>();
+        private static List<MinNetPeer> p2pMemberList = new List<MinNetPeer>();
+        private static Dictionary<int, MinNetPeer> p2pMemberIDMap = new Dictionary<int, MinNetPeer>();
+        private static Dictionary<IPEndPoint, MinNetPeer> p2pMemberEndPointMap = new Dictionary<IPEndPoint, MinNetPeer>();
 
         private static IPEndPoint remoteEndpoint = null;
+
+        public static string RemoteIP
+        {
+            get
+            {
+                return remoteEndpoint.Address.ToString();
+            }
+        }
+
+        public static int RemotePort
+        {
+            get
+            {
+                return remoteEndpoint.Port;
+            }
+        }
 
         private static ushort udpPort = 0;
         public static ushort UDPport
@@ -486,6 +568,14 @@ namespace MinNetforUnity
 
         private static int userID = -1;
 
+        public static int UserID
+        {
+            get
+            {
+                return userID;
+            }
+        }
+
         public static Queue<MinNetPacket> packetQ = new Queue<MinNetPacket>();
         private static Queue<MinNetPacket> packetPool = new Queue<MinNetPacket>();
         private static Queue<UDPCallBackObject> callbackObjectPool = new Queue<UDPCallBackObject>();
@@ -501,6 +591,88 @@ namespace MinNetforUnity
         private static DateTime lastSyncTime = DateTime.Now;
 
         public static LoadSceneDelegate loadSceneDelegate = null;
+
+        private static void AddP2PMember(int id, string remoteIP, int remotePort)
+        {
+            MinNetPeer peer = null;
+
+            if (!p2pMemberIDMap.TryGetValue(id, out peer))
+            {// 해당 id와 일치하는 값이 없다면
+                peer = new MinNetPeer(remoteIP, remotePort, id);
+
+                p2pMemberIDMap.Add(id, peer);
+                p2pMemberEndPointMap.Add(peer.endPoint, peer);
+                p2pMemberList.Add(peer);
+
+                peer.HolePunchTestStart();
+            }
+        }
+
+        private static void DelP2PMember(int id)
+        {
+            MinNetPeer peer = null;
+
+            if (p2pMemberIDMap.TryGetValue(id, out peer))
+            {
+                p2pMemberIDMap.Remove(id);
+                p2pMemberEndPointMap.Remove(peer.endPoint);
+                p2pMemberList.Remove(peer);
+            }
+        }
+
+        private static void DelP2PMember(IPEndPoint ipEndpoint)
+        {
+            MinNetPeer peer = null;
+
+            if (p2pMemberEndPointMap.TryGetValue(ipEndpoint, out peer))
+            {
+                p2pMemberIDMap.Remove(peer.ID);
+                p2pMemberEndPointMap.Remove(ipEndpoint);
+                p2pMemberList.Remove(peer);
+            }
+        }
+
+        private static MinNetPeer GetP2PMember(int id)
+        {
+            MinNetPeer peer = null;
+
+            p2pMemberIDMap.TryGetValue(id, out peer);
+
+            return peer;
+        }
+
+        private static MinNetPeer GetP2PMember(IPEndPoint ipEndPoint)
+        {
+            MinNetPeer peer = null;
+
+            p2pMemberEndPointMap.TryGetValue(ipEndPoint, out peer);
+
+            return peer;
+        }
+
+        private static void ClearP2PMember()
+        {
+            p2pMemberIDMap.Clear();
+            p2pMemberEndPointMap.Clear();
+            p2pMemberList.Clear();
+        }
+
+        public static void SendIsCanP2P(MinNetPeer peer)
+        {
+            var packet = MinNetUser.PopPacket();
+            packet.create_packet((int)Defines.MinNetPacketType.IS_CAN_P2P);
+            packet.push(MinNetUser.UserID);
+            packet.push(MinNetUser.RemoteIP);
+            packet.push(MinNetUser.RemotePort);
+            packet.create_header();
+
+
+        }
+
+        public static void SendIsCanP2PACK(MinNetPeer peer)
+        {
+
+        }
 
         private static void sendUDPtimerCallBack(System.Object state)
         {
@@ -959,10 +1131,8 @@ namespace MinNetforUnity
                 {
                     Debug.Log("P2Pgroup Count : " + p2pMemberList.Count.ToString());
 
-                    foreach (var endPoint in p2pMemberList)
+                    foreach (var peer in p2pMemberList)
                     {
-                        var end = (IPEndPoint)endPoint;
-                        Debug.Log("p2p IP : " + end.Address.ToString() + ", port : " + end.Port.ToString());
                         MinNetPacket p2pPacket = MinNetUser.PopPacket();
 
                         p2pPacket.create_packet((int)Defines.MinNetPacketType.RPC);
@@ -971,7 +1141,7 @@ namespace MinNetforUnity
 
                         p2pPacket.create_header();
 
-                        SendUdp(p2pPacket, endPoint);
+                        SendUdp(p2pPacket, peer.endPoint);
                     }
 
                     PushPacket(packet);
@@ -1189,48 +1359,6 @@ namespace MinNetforUnity
             }
         }
 
-        private static void Addp2pMember(MinNetPacket packet)
-        {
-            IPEndPoint endPoint = null;
-
-            var id = packet.pop_int();
-            var ip = packet.pop_string();
-            var port = packet.pop_int();
-
-            Debug.Log(id.ToString() + " : " + ip + " : " + port.ToString());
-
-            if(p2pMemberMap.TryGetValue(id, out endPoint))
-            {// 이미 값이 있음
-                endPoint.Address = IPAddress.Parse(ip);
-                endPoint.Port = port;
-            }
-            else
-            {// 아직 값이 없음
-                endPoint = new IPEndPoint(IPAddress.Parse(ip), port);
-                p2pMemberMap.Add(id, endPoint);
-                p2pMemberList.Add(endPoint);
-            }
-        }
-
-        private static void Delp2pMember(MinNetPacket packet)
-        {
-            var id = packet.pop_int();
-
-            IPEndPoint endPoint;
-
-            if (p2pMemberMap.TryGetValue(id, out endPoint))
-            {// 이미 값이 있음
-                p2pMemberMap.Remove(id);
-                p2pMemberList.Remove(endPoint);
-            }
-        }
-
-        private static void Clearp2pMember()
-        {
-            p2pMemberList.Clear();
-            p2pMemberMap.Clear();
-        }
-
         private static void PacketHandler(MinNetPacket packet)
         {
             Defines.MinNetPacketType packetType = (Defines.MinNetPacketType)packet.packet_type;
@@ -1241,7 +1369,6 @@ namespace MinNetforUnity
                     ServerTime = packet.pop_int() - (int)(Ping * 0.5f);
                     MinNetUser.PushPacket(packet);
                     break;
-
 
                 case Defines.MinNetPacketType.IP_CAST:
                     SetRemoteAddress(packet);
@@ -1265,21 +1392,39 @@ namespace MinNetforUnity
 
                 case Defines.MinNetPacketType.OTHER_JOIN_P2P_GROUP:// 누군가가 p2p 그룹에 들어옴
                 case Defines.MinNetPacketType.P2P_MEMBER_CAST:// 기존 p2p 그룹에 있는 정보를 받음
-                    Addp2pMember(packet);
-                    MinNetUser.PushPacket(packet);
-                    break;
+                    {
+                        var peerID = packet.pop_int();
+                        var peerIP = packet.pop_string();
+                        var peerPort = packet.pop_int();
+                        AddP2PMember(peerID, peerIP, peerPort);
+                        MinNetUser.PushPacket(packet);
+                        break;
+                    }
 
                 case Defines.MinNetPacketType.OTHER_LEAVE_P2P_GROUP:// 누군가가 p2p 그룹에서 나감
-                    Delp2pMember(packet);
-                    MinNetUser.PushPacket(packet);
-                    break;
+                    {
+                        var peerID = packet.pop_int();
+                        DelP2PMember(peerID);
+                        MinNetUser.PushPacket(packet);
+                        break;
+                    }
 
                 case Defines.MinNetPacketType.JOIN_P2P_GROUP:// 내가 p2p 그룹에 들어감
                     
                     break;
 
                 case Defines.MinNetPacketType.LEAVE_P2P_GROUP:// 내가 p2p 그룹을 나감
-                    Clearp2pMember();
+                    ClearP2PMember();
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.IS_CAN_P2P:// 누군가로 부터 p2p 통신이 가능한지 물어보는 패킷이 왔음
+
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.IS_CAN_P2P_ACK:// 누군가로 부터 p2p 통신이 가능하다는 패킷이 왔음
+                    ClearP2PMember();
                     MinNetUser.PushPacket(packet);
                     break;
 
