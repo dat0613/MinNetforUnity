@@ -162,10 +162,17 @@ namespace MinNetforUnity
         public void HolePunchTestStart()
         {
             if (holePunchTestCount >= maxHolePunchTestCount)// 테스트 패킷이 일정 횟수 이상 답이 없으면 해당 피어로 부터의 홀펀칭이 실패한 것임
+            {
+                Debug.Log(id + " 피어와 p2p 통신 실패");
                 return;
+            }
 
             holePunchTestCount++;
             holePunchTestTimer.Change(3000, System.Threading.Timeout.Infinite);
+
+            Debug.Log(id + " 피어 에게 p2p 테스트 패킷 전송 #" + holePunchTestCount);
+
+            MinNetUser.SendIsCanP2P(this);
         }
 
         private void HolePunchTestCallBack(System.Object state)
@@ -491,7 +498,6 @@ namespace MinNetforUnity
             CHANGE_SCENE_COMPLETE,
             SET_USER_VALUE,
             GET_USER_VALUE,
-            IP_CAST,
             OTHER_JOIN_P2P_GROUP,
             OTHER_LEAVE_P2P_GROUP,
             JOIN_P2P_GROUP,
@@ -499,6 +505,7 @@ namespace MinNetforUnity
             P2P_MEMBER_CAST,
             SEND_UDP_FIRST,
             SEND_UDP_FIRST_ACK,
+            READY_TO_ENTER,
             IS_CAN_P2P,
             IS_CAN_P2P_ACK,
         };
@@ -660,30 +667,37 @@ namespace MinNetforUnity
         public static void SendIsCanP2P(MinNetPeer peer)
         {
             var packet = MinNetUser.PopPacket();
+
             packet.create_packet((int)Defines.MinNetPacketType.IS_CAN_P2P);
             packet.push(MinNetUser.UserID);
             packet.push(MinNetUser.RemoteIP);
             packet.push(MinNetUser.RemotePort);
             packet.create_header();
 
-
+            SendUdp(packet, peer.endPoint);
         }
 
         public static void SendIsCanP2PACK(MinNetPeer peer)
         {
+            var packet = MinNetUser.PopPacket();
 
+            packet.create_packet((int)Defines.MinNetPacketType.IS_CAN_P2P_ACK);
+            packet.push(MinNetUser.UserID);
+            packet.push(MinNetUser.RemoteIP);
+            packet.push(MinNetUser.RemotePort);
+            packet.create_header();
+
+            SendUdp(packet, peer.endPoint);
         }
 
         private static void sendUDPtimerCallBack(System.Object state)
         {
             if(!serverKnowThisIP)
             {
-                Debug.Log("서버에게 udp ip를 다시 알려줌");
                 SendUdpFirst();
             }
             else
             {
-                Debug.Log("서버에게 udp ip를 알려주는데 성공함");
             }
         }
 
@@ -1129,10 +1143,11 @@ namespace MinNetforUnity
             {
                 if (target == MinNetRpcTarget.P2Pgroup)
                 {
-                    Debug.Log("P2Pgroup Count : " + p2pMemberList.Count.ToString());
-
                     foreach (var peer in p2pMemberList)
                     {
+                        if (!peer.IsCanP2P)
+                            continue;
+
                         MinNetPacket p2pPacket = MinNetUser.PopPacket();
 
                         p2pPacket.create_packet((int)Defines.MinNetPacketType.RPC);
@@ -1312,8 +1327,6 @@ namespace MinNetforUnity
             var ip = packet.pop_string();
             var port = packet.pop_int();
 
-            Debug.Log("RemoteIP : " + ip + " : " + port.ToString());
-
             if (remoteEndpoint == null)
             {
                 remoteEndpoint = new IPEndPoint(IPAddress.Parse(ip), port);
@@ -1323,6 +1336,15 @@ namespace MinNetforUnity
                 remoteEndpoint.Address = IPAddress.Parse(ip);
                 remoteEndpoint.Port = port;
             }
+        }
+
+        private static void SendReadyToEnter()
+        {
+            MinNetPacket packet = MinNetUser.PopPacket();
+            packet.create_packet((int)Defines.MinNetPacketType.READY_TO_ENTER);
+            packet.create_header();
+
+            Send(packet);
         }
 
         private static void SetUserID(MinNetPacket packet)
@@ -1339,7 +1361,6 @@ namespace MinNetforUnity
             SendUdp(packet, udpServerEndpoint);
 
             sendUDPtimer.Change(1000, System.Threading.Timeout.Infinite);
-            Debug.Log("서버에게 udp ip를 알려줌");
         }
 
         private static void OnUdpFirstACK(MinNetPacket packet)
@@ -1359,6 +1380,42 @@ namespace MinNetforUnity
             }
         }
 
+        private static void OnIsCanP2P(MinNetPacket packet)
+        {
+            var peerID = packet.pop_int();
+            var peerIP = packet.pop_string();
+            var peerPort = packet.pop_int();
+
+            var peer = GetP2PMember(peerID);
+
+            if (peer == null)
+                return;
+
+            if (!(peer.endPoint.Address.ToString().Equals(peerIP) && peer.endPoint.Port.Equals(peerPort)))
+                return;
+
+            SendIsCanP2PACK(peer);
+        }
+
+        private static void OnIsCanP2PACK(MinNetPacket packet)
+        {
+            var peerID = packet.pop_int();
+            var peerIP = packet.pop_string();
+            var peerPort = packet.pop_int();
+
+            var peer = GetP2PMember(peerID);
+
+            if (peer == null)
+                return;
+
+            if (!(peer.endPoint.Address.ToString().Equals(peerIP) && peer.endPoint.Port.Equals(peerPort)))
+                return;
+
+            peer.IsCanP2P = true;
+
+            Debug.Log(peer.ID + " 피어와 p2p 통신 성공");
+        }
+
         private static void PacketHandler(MinNetPacket packet)
         {
             Defines.MinNetPacketType packetType = (Defines.MinNetPacketType)packet.packet_type;
@@ -1370,23 +1427,25 @@ namespace MinNetforUnity
                     MinNetUser.PushPacket(packet);
                     break;
 
-                case Defines.MinNetPacketType.IP_CAST:
-                    SetRemoteAddress(packet);
-                    MinNetUser.PushPacket(packet);
-                    break;
-
-                case Defines.MinNetPacketType.SEND_UDP_FIRST:
-                    SendUdpFirst();
-                    MinNetUser.PushPacket(packet);
-                    break;
-
                 case Defines.MinNetPacketType.USER_ID_CAST:
                     SetUserID(packet);
                     MinNetUser.PushPacket(packet);
+                    SendUdpFirst();
                     break;
 
                 case Defines.MinNetPacketType.SEND_UDP_FIRST_ACK:
                     OnUdpFirstACK(packet);
+                    MinNetUser.PushPacket(packet);
+                    SendReadyToEnter(); 
+                    break;
+
+                case Defines.MinNetPacketType.IS_CAN_P2P:
+                    OnIsCanP2P(packet);// 피어로부터 p2p 통신이 가능한지 물어보는 패킷이 도착함
+                    MinNetUser.PushPacket(packet);
+                    break;
+
+                case Defines.MinNetPacketType.IS_CAN_P2P_ACK:
+                    OnIsCanP2PACK(packet);// 피어로부터 p2p 통신이 가능하다는 패킷이 도착함
                     MinNetUser.PushPacket(packet);
                     break;
 
@@ -1414,16 +1473,6 @@ namespace MinNetforUnity
                     break;
 
                 case Defines.MinNetPacketType.LEAVE_P2P_GROUP:// 내가 p2p 그룹을 나감
-                    ClearP2PMember();
-                    MinNetUser.PushPacket(packet);
-                    break;
-
-                case Defines.MinNetPacketType.IS_CAN_P2P:// 누군가로 부터 p2p 통신이 가능한지 물어보는 패킷이 왔음
-
-                    MinNetUser.PushPacket(packet);
-                    break;
-
-                case Defines.MinNetPacketType.IS_CAN_P2P_ACK:// 누군가로 부터 p2p 통신이 가능하다는 패킷이 왔음
                     ClearP2PMember();
                     MinNetUser.PushPacket(packet);
                     break;
@@ -1730,6 +1779,7 @@ namespace MinNetforUnity
         private static void ConnectCallBack(IAsyncResult ar)
         {
             eventSet es = (eventSet)ar.AsyncState;
+
             try
             {
                 es.Item1.EndConnect(ar);
