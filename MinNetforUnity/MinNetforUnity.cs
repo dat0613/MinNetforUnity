@@ -170,7 +170,7 @@ namespace MinNetforUnity
             holePunchTestCount++;
             holePunchTestTimer.Change(3000, System.Threading.Timeout.Infinite);
 
-            Debug.Log(id + " 피어 에게 p2p 테스트 패킷 전송 #" + holePunchTestCount);
+            //Debug.Log(id + " 피어 에게 p2p 테스트 패킷 전송 #" + holePunchTestCount);
 
             MinNetUser.SendIsCanP2P(this);
         }
@@ -432,6 +432,7 @@ namespace MinNetforUnity
                     MinNetUser.ObjectDestroy(packet);
                     break;
 
+                case Defines.MinNetPacketType.RPC_P2P:
                 case Defines.MinNetPacketType.RPC:
                     MinNetUser.ObjectRPC(packet);
                     break;
@@ -490,6 +491,7 @@ namespace MinNetforUnity
             PONG,
             PING_CAST,
             RPC,
+            RPC_P2P,
             USER_ID_CAST,
             ID_CAST,
             CREATE_ROOM,
@@ -508,6 +510,7 @@ namespace MinNetforUnity
             READY_TO_ENTER,
             IS_CAN_P2P,
             IS_CAN_P2P_ACK,
+
         };
     }
 
@@ -801,37 +804,6 @@ namespace MinNetforUnity
             }
         }
 
-        //public static UDPCallBackObject PopCallbackObject()// 오브젝트 풀 에서 패킷 하나를 빼옴
-        //{
-        //    UDPCallBackObject retval = null;
-
-        //    lock (packetPool)
-        //    {
-        //        if (packetPool.Count > 0)
-        //        {
-        //            retval = packetPool.Dequeue();
-        //        }
-        //        else// 풀에 남은 패킷이 없다면 새로 하나 만듦
-        //        {
-        //            retval = new MinNetPacket();
-        //        }
-        //    }
-
-        //    return retval;
-        //}
-
-        //public static void PushPacket(UDPCallBackObject callBackObject)// 다 쓴 패킷을 다시 풀에 넣음
-        //{
-        //    callBackObject.
-
-        //    packet.Clear();
-
-        //    lock (packetPool)
-        //    {
-        //        packetPool.Enqueue(packet);
-        //    }
-        //}
-
         public static int Ping
         {
             get
@@ -1121,7 +1093,12 @@ namespace MinNetforUnity
         public static void SendRPC(int id, string componentName, string methodName, MinNetRpcTarget target, bool isTcp, params object[] parameters)
         {
             MinNetPacket packet = MinNetUser.PopPacket();
-            packet.create_packet((int)Defines.MinNetPacketType.RPC);
+
+            if(target == MinNetRpcTarget.P2Pgroup)
+                packet.create_packet((int)Defines.MinNetPacketType.RPC_P2P);
+            else
+                packet.create_packet((int)Defines.MinNetPacketType.RPC);
+
             packet.push(id);
             packet.push(componentName);
             packet.push(methodName);
@@ -1137,6 +1114,8 @@ namespace MinNetforUnity
 
             packet.create_header();
 
+            bool relay = false;
+
             if (isTcp)
                 Send(packet);
             else
@@ -1146,11 +1125,14 @@ namespace MinNetforUnity
                     foreach (var peer in p2pMemberList)
                     {
                         if (!peer.IsCanP2P)
+                        {
+                            relay = true;
                             continue;
+                        }
 
                         MinNetPacket p2pPacket = MinNetUser.PopPacket();
 
-                        p2pPacket.create_packet((int)Defines.MinNetPacketType.RPC);
+                        p2pPacket.create_packet((int)Defines.MinNetPacketType.RPC_P2P);
                         packet.buffer.CopyTo(p2pPacket.buffer, 0);
                         p2pPacket.position = packet.position;
 
@@ -1159,7 +1141,13 @@ namespace MinNetforUnity
                         SendUdp(p2pPacket, peer.endPoint);
                     }
 
-                    PushPacket(packet);
+                    if (relay)
+                    {
+                        Debug.Log("p2p에 실패한 클라이언트가 있어서 서버를 통해 패킷을 보냄");
+                        SendUdp(packet, udpServerEndpoint);
+                    }
+                    else
+                        PushPacket(packet);
                 }
                 else
                     SendUdp(packet, udpServerEndpoint);
@@ -1397,6 +1385,15 @@ namespace MinNetforUnity
             SendIsCanP2PACK(peer);
         }
 
+        private static void OnIsCanP2PReportToServer(int peerID)// 해당 피어와 p2p 통신에 성공했다는 패킷을 서버에게 보내 패킷 이 피어와는 직접 통신 하겠다는것을 알림
+        {
+            var reportPacket = PopPacket();
+            reportPacket.create_packet((int)Defines.MinNetPacketType.IS_CAN_P2P_ACK);
+            reportPacket.push(peerID);
+            reportPacket.create_header();
+            Send(reportPacket);
+        }
+
         private static void OnIsCanP2PACK(MinNetPacket packet)
         {
             var peerID = packet.pop_int();
@@ -1413,7 +1410,7 @@ namespace MinNetforUnity
 
             peer.IsCanP2P = true;
 
-            Debug.Log(peer.ID + " 피어와 p2p 통신 성공");
+            OnIsCanP2PReportToServer(peerID);
         }
 
         private static void PacketHandler(MinNetPacket packet)
