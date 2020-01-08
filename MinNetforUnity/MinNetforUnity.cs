@@ -17,7 +17,15 @@ namespace MinNetforUnity
 
     public delegate void CallBack(Exception e);
 
-    public enum MinNetRpcTarget { All = -1000, Others, AllViaServer, Server, P2Pgroup };// RPC 대상에 대한 옵션
+    public enum MinNetRpcTarget
+    {
+        All = -1000,
+        Others,
+        AllViaServer,
+        Server,
+        P2Pgroup,
+        P2PgroupAndServer
+    };// RPC 대상에 대한 옵션
 
     public class MonoBehaviourMinNetCallBack : MonoBehaviour
     {
@@ -1094,7 +1102,7 @@ namespace MinNetforUnity
         {
             MinNetPacket packet = MinNetUser.PopPacket();
 
-            if(target == MinNetRpcTarget.P2Pgroup)
+            if(target == MinNetRpcTarget.P2Pgroup || target == MinNetRpcTarget.P2PgroupAndServer)
                 packet.create_packet((int)Defines.MinNetPacketType.RPC_P2P);
             else
                 packet.create_packet((int)Defines.MinNetPacketType.RPC);
@@ -1114,14 +1122,15 @@ namespace MinNetforUnity
 
             packet.create_header();
 
-            bool relay = false;
 
             if (isTcp)
                 Send(packet);
             else
             {
-                if (target == MinNetRpcTarget.P2Pgroup)
+                if (target == MinNetRpcTarget.P2Pgroup || target == MinNetRpcTarget.P2PgroupAndServer)
                 {
+                    bool relay = (target == MinNetRpcTarget.P2PgroupAndServer);
+
                     foreach (var peer in p2pMemberList)
                     {
                         if (!peer.IsCanP2P)
@@ -1141,12 +1150,9 @@ namespace MinNetforUnity
                         SendUdp(p2pPacket, peer.endPoint);
                     }
 
-                    if (relay)
-                    {
-                        Debug.Log("p2p에 실패한 클라이언트가 있어서 서버를 통해 패킷을 보냄");
+                    if (relay)// 릴레이 해야한다면 서버에게 패킷을 보냄
                         SendUdp(packet, udpServerEndpoint);
-                    }
-                    else
+                    else// 릴레이 할 필요가 없다면 패킷을 회수함
                         PushPacket(packet);
                 }
                 else
@@ -1725,7 +1731,6 @@ namespace MinNetforUnity
         private static void SendUdp(MinNetPacket packet, EndPoint endPoint)
         {
             var ipEndPoint = (IPEndPoint)endPoint;
-            Debug.Log(ipEndPoint.Address.ToString() + " : " + ipEndPoint.Port.ToString());
 
             var callbackObject = new UDPCallBackObject(packet, endPoint);
             try
