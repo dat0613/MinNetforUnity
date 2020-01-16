@@ -526,9 +526,10 @@ namespace MinNetforUnity
     {
         public delegate IEnumerator LoadSceneDelegate(string sceneName);
         private static Queue<MinNetView> waitIdObject = new Queue<MinNetView>();// 서버로 부터 id부여를 기다리는 객체들이 임시적으로 있을 곳
+        private static Timer sendUDPtimer = new Timer(new TimerCallback(sendUDPtimerCallBack));
+
         private static Dictionary<int, MinNetView> networkObjectDictionary = new Dictionary<int, MinNetView>();// 서버와 동기화 되는 객체들을 모아두는 곳
         private static Dictionary<string, GameObject> networkObjectCache = new Dictionary<string, GameObject>();// 각종 객체들의 캐시
-        private static Timer sendUDPtimer = new Timer(new TimerCallback(sendUDPtimerCallBack));
 
         private static Dictionary<string, Type> componentCache = new Dictionary<string, Type>();// 리플렉션사용의 최소화를 위해 한번 찾아낸 컴포넌트는 미리 저장해둠
         private static Dictionary<Type, Dictionary<string, MethodBase>> methodCache = new Dictionary<Type, Dictionary<string, MethodBase>>();// 한번 찾은 함수도 미리 저장해 둠, 첫 키값은 컴포넌트의 이름, 다음 키값은 함수의 이름
@@ -605,8 +606,8 @@ namespace MinNetforUnity
         private static Socket udpSocket = null;
 
         private static int ping = 20;
-        private static int serverTime = 0;// 서버가 시작된 후로 부터 흐른 시간 ms단위
-        private static DateTime lastSyncTime = DateTime.Now;
+        private static float serverTime = 0.0f;// 서버가 시작된 후로 부터 흐른 시간 초단위
+        private static float lastSyncTime = Time.time;
 
         public static LoadSceneDelegate loadSceneDelegate = null;
 
@@ -824,16 +825,16 @@ namespace MinNetforUnity
             }
         }
 
-        public static int ServerTime
+        public static float ServerTime
         {
             get
             {
-                return serverTime + (int)((DateTime.Now - lastSyncTime).Ticks * 0.0001f);
+                return serverTime + Time.time - lastSyncTime;
             }
             private set
             {
                 serverTime = value;
-                lastSyncTime = DateTime.Now;
+                lastSyncTime = Time.time;
             }
         }
 
@@ -1426,7 +1427,7 @@ namespace MinNetforUnity
             {
                 case Defines.MinNetPacketType.PING_CAST:
                     Ping = packet.pop_int();
-                    ServerTime = packet.pop_int() - (int)(Ping * 0.5f);
+                    ServerTime = packet.pop_float() - ((float)Ping * 0.5f);
                     MinNetUser.PushPacket(packet);
                     break;
 
