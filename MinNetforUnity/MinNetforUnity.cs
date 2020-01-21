@@ -607,7 +607,7 @@ namespace MinNetforUnity
 
         private static int ping = 20;
         private static float serverTime = 0.0f;// 서버가 시작된 후로 부터 흐른 시간 초단위
-        private static float lastSyncTime = Time.time;
+        private static System.Diagnostics.Stopwatch stopwatch = new System.Diagnostics.Stopwatch();
 
         public static LoadSceneDelegate loadSceneDelegate = null;
 
@@ -829,12 +829,14 @@ namespace MinNetforUnity
         {
             get
             {
-                return serverTime + Time.time - lastSyncTime;
+                return serverTime + stopwatch.ElapsedMilliseconds * 0.001f;
             }
             private set
             {
                 serverTime = value;
-                lastSyncTime = Time.time;
+
+                stopwatch.Reset();
+                stopwatch.Start();
             }
         }
 
@@ -1427,7 +1429,7 @@ namespace MinNetforUnity
             {
                 case Defines.MinNetPacketType.PING_CAST:
                     Ping = packet.pop_int();
-                    ServerTime = packet.pop_float() - ((float)Ping * 0.5f);
+                    ServerTime = packet.pop_float() + ((float)Ping * 0.5f);
                     MinNetUser.PushPacket(packet);
                     break;
 
